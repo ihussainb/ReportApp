@@ -149,13 +149,15 @@ The app will **automatically ignore the first 11 rows** (which typically contain
 Your file must have columns: Date, Particulars, Vch Type, Vch No., Debit, Credit starting from the 12th row.
 """)
 
-uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
-
+uploaded_file = st.file_uploader("Upload your ledger Excel file", type=["xlsx"])
 if uploaded_file:
     try:
         df = pd.read_excel(uploaded_file, skiprows=12)
-        st.success("File uploaded and read successfully.")
-        st.write("Preview:", df.head())
+        # Clean up columns
+        expected_cols = ["Date", "Particulars", "Vch Type", "Vch No.", "Debit", "Credit"]
+        df = df.loc[:, df.columns[:6]]  # Only first 6 columns
+        df.columns = expected_cols      # Rename columns, regardless of original
+        st.write(df.head())
         table, grand_weighted = analyze_ledger(df)
         if table:
             st.markdown(f"### Grand Weighted Average Days Late: **{grand_weighted}**")
