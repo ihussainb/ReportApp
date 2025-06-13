@@ -7,7 +7,6 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 
-DATE_FMT = '%d-%b-%y'
 CREDIT_PERIOD_DAYS = 30
 EXCLUDE_TYPES = {'CREDIT NOTE - C25', 'JOURNAL - C25'}
 
@@ -21,9 +20,11 @@ def parse_date(s):
     if isinstance(s, datetime):
         return s
     try:
-        return datetime.strptime(str(s).split()[0], DATE_FMT)
+        # Try dd-mmm-yy (01-Apr-22)
+        return datetime.strptime(str(s).split()[0], "%d-%b-%y")
     except Exception:
         try:
+            # Try dd/mm/yyyy or other
             return pd.to_datetime(s)
         except Exception:
             return None
@@ -37,39 +38,43 @@ def analyze_ledger(df):
         if vch_type in EXCLUDE_TYPES:
             continue
         date = row.get('Date')
-        if not date or (isinstance(date, str) and not any(c.isdigit() for c in date)):
-            continue
         debit = parse_float(row.get('Debit', ''))
         credit = parse_float(row.get('Credit', ''))
         vch_no = str(row.get('Vch No.', '')).strip()
         particulars = str(row.get('Particulars', '')).strip()
+        # Skip rows with no date or invalid date
+        sale_date = parse_date(date)
+        if not sale_date:
+            continue
+        # Opening Balance: treat as sale if positive
         if particulars.lower() == "opening balance":
-            sale_date = parse_date(date)
-            sales.append({
-                'date': sale_date,
-                'vch_no': 'Opening Balance',
-                'amount': credit if credit > 0 else debit,
-                'due_date': sale_date + timedelta(days=CREDIT_PERIOD_DAYS) if sale_date else None,
-                'remaining': credit if credit > 0 else debit,
-                'payments': []
-            })
+            amount = credit if credit > 0 else debit
+            if amount > 0:
+                sales.append({
+                    'date': sale_date,
+                    'vch_no': 'Opening Balance',
+                    'amount': amount,
+                    'due_date': sale_date + timedelta(days=CREDIT_PERIOD_DAYS),
+                    'remaining': amount,
+                    'payments': []
+                })
+        # Tally: Credit = Sale, Debit = Payment
         elif credit > 0:
-            sale_date = parse_date(date)
             sales.append({
                 'date': sale_date,
                 'vch_no': vch_no,
                 'amount': credit,
-                'due_date': sale_date + timedelta(days=CREDIT_PERIOD_DAYS) if sale_date else None,
+                'due_date': sale_date + timedelta(days=CREDIT_PERIOD_DAYS),
                 'remaining': credit,
                 'payments': []
             })
         elif debit > 0:
             payments.append({
-                'date': parse_date(date),
+                'date': sale_date,
                 'amount': debit
             })
 
-    # Apply FIFO payments
+    # Apply FIFO payments to sales
     sale_idx = 0
     for payment in payments:
         amt_left = payment['amount']
@@ -151,7 +156,7 @@ def generate_pdf_report(table, grand_weighted, filename):
 
 st.title("Ledger Weighted Average Days to Pay Report")
 st.markdown("""
-**Upload your Tally ledger Excel file (`.xlsx`).**  
+**Upload your Tally ledger Excel file (`.xlsx`)**  
 The app will automatically detect the table header ("Date", "Particulars", ...) and ignore any extra rows above it.
 """)
 
@@ -160,7 +165,8 @@ uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
 def find_header_row(df):
     for i, row in df.iterrows():
         cols = [str(x).strip().lower() for x in row.values]
-        if "date" in cols and "particulars" in cols and "vch type" in cols and "debit" in cols and "credit" in cols:
+        if ("date" in cols and "particulars" in cols and "vch type" in cols 
+            and "vch no." in cols and "debit" in cols and "credit" in cols):
             return i
     return None
 
@@ -176,6 +182,7 @@ if uploaded_file:
             df = pd.read_excel(uploaded_file, header=header_row)
             # Drop unnamed/extra columns
             df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+            # Only keep expected columns, in order
             expected_cols = ["Date", "Particulars", "Vch Type", "Vch No.", "Debit", "Credit"]
             df = df[[col for col in expected_cols if col in df.columns]]
             st.success(f"File loaded using header row {header_row+1}.")
