@@ -18,11 +18,18 @@ def parse_float(s):
         return 0.0
 
 def parse_date(s):
-    return datetime.strptime(str(s).strip(), DATE_FMT)
+    if isinstance(s, datetime):
+        return s
+    try:
+        return datetime.strptime(str(s).split()[0], DATE_FMT)
+    except Exception:
+        try:
+            return pd.to_datetime(s)
+        except Exception:
+            return None
 
 @st.cache_data(show_spinner=False)
 def analyze_ledger(df):
-    # Prepare sales and payments lists
     sales = []
     payments = []
     for _, row in df.iterrows():
@@ -30,7 +37,7 @@ def analyze_ledger(df):
         if vch_type in EXCLUDE_TYPES:
             continue
         date = row.get('Date')
-        if not isinstance(date, str) or not any(c.isalpha() for c in date):
+        if not date or (isinstance(date, str) and not any(c.isdigit() for c in date)):
             continue
         debit = parse_float(row.get('Debit', ''))
         credit = parse_float(row.get('Credit', ''))
@@ -41,25 +48,25 @@ def analyze_ledger(df):
             sales.append({
                 'date': sale_date,
                 'vch_no': 'Opening Balance',
-                'amount': debit,
-                'due_date': sale_date + timedelta(days=CREDIT_PERIOD_DAYS),
-                'remaining': debit,
+                'amount': credit if credit > 0 else debit,
+                'due_date': sale_date + timedelta(days=CREDIT_PERIOD_DAYS) if sale_date else None,
+                'remaining': credit if credit > 0 else debit,
                 'payments': []
             })
-        elif debit > 0:
+        elif credit > 0:
             sale_date = parse_date(date)
             sales.append({
                 'date': sale_date,
                 'vch_no': vch_no,
-                'amount': debit,
-                'due_date': sale_date + timedelta(days=CREDIT_PERIOD_DAYS),
-                'remaining': debit,
+                'amount': credit,
+                'due_date': sale_date + timedelta(days=CREDIT_PERIOD_DAYS) if sale_date else None,
+                'remaining': credit,
                 'payments': []
             })
-        elif credit > 0:
+        elif debit > 0:
             payments.append({
                 'date': parse_date(date),
-                'amount': credit
+                'amount': debit
             })
 
     # Apply FIFO payments
@@ -82,7 +89,6 @@ def analyze_ledger(df):
             elif amt_left == 0:
                 break
 
-    # Prepare results table and grand weighted
     table = []
     total_impact = 0.0
     total_amount = 0.0
@@ -90,11 +96,12 @@ def analyze_ledger(df):
         if abs(sale['remaining']) < 1e-2 and sale['payments']:
             total_per_invoice = 0.0
             for pay in sale['payments']:
-                days_late = (pay['pay_date'] - sale['due_date']).days
-                total_per_invoice += pay['pay_amt'] * days_late
+                if sale['due_date'] and pay['pay_date']:
+                    days_late = (pay['pay_date'] - sale['due_date']).days
+                    total_per_invoice += pay['pay_amt'] * days_late
             weighted_days = total_per_invoice / sale['amount'] if sale['amount'] else 0
             table.append({
-                'Sale_Date': sale['date'].strftime('%d-%b-%y'),
+                'Sale_Date': sale['date'].strftime('%d-%b-%y') if sale['date'] else "",
                 'Invoice_No': sale['vch_no'],
                 'Sale_Amount': sale['amount'],
                 'Weighted_Days_Late': round(weighted_days, 2)
@@ -144,35 +151,50 @@ def generate_pdf_report(table, grand_weighted, filename):
 
 st.title("Ledger Weighted Average Days to Pay Report")
 st.markdown("""
-Upload your Tally ledger Excel file (`.xlsx`).  
-The app will **automatically ignore the first 11 rows** (which typically contain company/header info).  
-Your file must have columns: Date, Particulars, Vch Type, Vch No., Debit, Credit starting from the 12th row.
+**Upload your Tally ledger Excel file (`.xlsx`).**  
+The app will automatically detect the table header ("Date", "Particulars", ...) and ignore any extra rows above it.
 """)
 
-uploaded_file = st.file_uploader("Upload your ledger Excel file", type=["xlsx"])
+uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
+
+def find_header_row(df):
+    for i, row in df.iterrows():
+        cols = [str(x).strip().lower() for x in row.values]
+        if "date" in cols and "particulars" in cols and "vch type" in cols and "debit" in cols and "credit" in cols:
+            return i
+    return None
+
 if uploaded_file:
     try:
-        df = pd.read_excel(uploaded_file, skiprows=12)
-        # Clean up columns
-        expected_cols = ["Date", "Particulars", "Vch Type", "Vch No.", "Debit", "Credit"]
-        df = df.loc[:, df.columns[:6]]  # Only first 6 columns
-        df.columns = expected_cols      # Rename columns, regardless of original
-        st.write(df.head())
-        table, grand_weighted = analyze_ledger(df)
-        if table:
-            st.markdown(f"### Grand Weighted Average Days Late: **{grand_weighted}**")
-            st.dataframe(pd.DataFrame(table))
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmpfile:
-                generate_pdf_report(table, grand_weighted, tmpfile.name)
-                tmpfile.seek(0)
-                st.download_button(
-                    label="Download PDF Report",
-                    data=tmpfile.read(),
-                    file_name="WADP_Report.pdf",
-                    mime="application/pdf"
-                )
+        # Load the first 20 rows as raw, no header
+        preview = pd.read_excel(uploaded_file, header=None, nrows=20)
+        header_row = find_header_row(preview)
+        if header_row is None:
+            st.error("Could not find header row. Please check the file format.")
         else:
-            st.warning("No fully cleared invoices found in this data.")
+            # Now load using the detected header row
+            df = pd.read_excel(uploaded_file, header=header_row)
+            # Drop unnamed/extra columns
+            df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+            expected_cols = ["Date", "Particulars", "Vch Type", "Vch No.", "Debit", "Credit"]
+            df = df[[col for col in expected_cols if col in df.columns]]
+            st.success(f"File loaded using header row {header_row+1}.")
+            st.write("Preview:", df.head())
+            table, grand_weighted = analyze_ledger(df)
+            if table:
+                st.markdown(f"### Grand Weighted Average Days Late: **{grand_weighted}**")
+                st.dataframe(pd.DataFrame(table))
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmpfile:
+                    generate_pdf_report(table, grand_weighted, tmpfile.name)
+                    tmpfile.seek(0)
+                    st.download_button(
+                        label="Download PDF Report",
+                        data=tmpfile.read(),
+                        file_name="WADP_Report.pdf",
+                        mime="application/pdf"
+                    )
+            else:
+                st.warning("No fully cleared invoices found in this data.")
     except Exception as e:
         st.error(f"Error processing file: {e}")
 else:
