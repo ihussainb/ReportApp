@@ -9,6 +9,22 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
 
+# Convert and clean dates
+results_df["Sale_Date_dt"] = pd.to_datetime(results_df["Sale_Date"], format="%d-%b-%y", errors='coerce')
+results_df = results_df.dropna(subset=["Sale_Date_dt"])
+
+if not results_df.empty:
+    fig = px.line(
+        results_df, 
+        x="Sale_Date_dt", 
+        y="Weighted_Days_Late", 
+        markers=True, 
+        title="Weighted Days Late Over Time"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.warning("No data to plot.")
+
 DATE_FMT = '%d-%b-%y'
 CREDIT_PERIOD_DAYS = 30
 EXCLUDE_TYPES = {'CREDIT NOTE - C25', 'JOURNAL - C25'}
