@@ -117,7 +117,6 @@ def generate_pdf_report(table, grand_weighted, filename, chart_path=None):
     elements.append(Spacer(1, 12))
     elements.append(Paragraph(f"Grand Weighted Average Days Late: <b>{grand_weighted}</b>", styleN))
     elements.append(Spacer(1, 24))
-    # Insert chart if exists
     if chart_path:
         elements.append(Image(chart_path, width=500, height=250))
         elements.append(Spacer(1, 24))
@@ -162,7 +161,7 @@ if uploaded_file:
             df_results = pd.DataFrame(table)
             st.dataframe(df_results)
 
-            # Add line chart for Weighted Days Late over Sale Date
+            # Visualization: Line chart of Weighted Days Late over Sale Date
             df_results["Sale_Date_dt"] = pd.to_datetime(df_results["Sale_Date"], format="%d-%b-%y", errors="coerce")
             df_results = df_results.dropna(subset=["Sale_Date_dt"])
             fig, ax = plt.subplots(figsize=(10, 4))
