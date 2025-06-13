@@ -5,7 +5,8 @@ from datetime import datetime, timedelta
 from reportlab.lib.pagesizes import LETTER, landscape
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+import matplotlib.pyplot as plt
 
 DATE_FMT = '%d-%b-%y'
 CREDIT_PERIOD_DAYS = 30
@@ -22,7 +23,6 @@ def parse_date(s):
 
 @st.cache_data(show_spinner=False)
 def analyze_ledger(df):
-    # Prepare sales and payments lists
     sales = []
     payments = []
     for _, row in df.iterrows():
@@ -62,7 +62,6 @@ def analyze_ledger(df):
                 'amount': credit
             })
 
-    # Apply FIFO payments
     sale_idx = 0
     for payment in payments:
         amt_left = payment['amount']
@@ -82,7 +81,6 @@ def analyze_ledger(df):
             elif amt_left == 0:
                 break
 
-    # Prepare results table and grand weighted
     table = []
     total_impact = 0.0
     total_amount = 0.0
@@ -104,7 +102,7 @@ def analyze_ledger(df):
     grand_weighted = round(total_impact / total_amount, 2) if total_amount else 0.0
     return table, grand_weighted
 
-def generate_pdf_report(table, grand_weighted, filename):
+def generate_pdf_report(table, grand_weighted, filename, chart_path=None):
     doc = SimpleDocTemplate(
         filename,
         pagesize=landscape(LETTER),
@@ -119,6 +117,10 @@ def generate_pdf_report(table, grand_weighted, filename):
     elements.append(Spacer(1, 12))
     elements.append(Paragraph(f"Grand Weighted Average Days Late: <b>{grand_weighted}</b>", styleN))
     elements.append(Spacer(1, 24))
+    # Insert chart if exists
+    if chart_path:
+        elements.append(Image(chart_path, width=500, height=250))
+        elements.append(Spacer(1, 24))
     data = [["Sale Date", "Invoice No", "Sale Amount", "Weighted Days Late"]]
     for row in table:
         data.append([
@@ -157,10 +159,28 @@ if uploaded_file:
         table, grand_weighted = analyze_ledger(df)
         if table:
             st.markdown(f"### Grand Weighted Average Days Late: **{grand_weighted}**")
-            st.dataframe(pd.DataFrame(table))
-            # PDF generation
+            df_results = pd.DataFrame(table)
+            st.dataframe(df_results)
+
+            # Add line chart for Weighted Days Late over Sale Date
+            df_results["Sale_Date_dt"] = pd.to_datetime(df_results["Sale_Date"], format="%d-%b-%y", errors="coerce")
+            df_results = df_results.dropna(subset=["Sale_Date_dt"])
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.plot(df_results["Sale_Date_dt"], df_results["Weighted_Days_Late"], marker="o")
+            ax.set_xlabel("Sale Date")
+            ax.set_ylabel("Weighted Days Late")
+            ax.set_title("Weighted Days Late Over Time")
+            plt.grid(True)
+            st.pyplot(fig, use_container_width=True)
+
+            # Save the chart as image for PDF
+            chart_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+            fig.savefig(chart_temp.name, bbox_inches='tight')
+            plt.close(fig)
+
+            # PDF generation with chart
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmpfile:
-                generate_pdf_report(table, grand_weighted, tmpfile.name)
+                generate_pdf_report(table, grand_weighted, tmpfile.name, chart_path=chart_temp.name)
                 tmpfile.seek(0)
                 st.download_button(
                     label="Download PDF Report",
