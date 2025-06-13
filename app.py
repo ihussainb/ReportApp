@@ -144,21 +144,22 @@ def generate_pdf_report(table, grand_weighted, filename):
 
 st.title("Ledger Weighted Average Days to Pay Report")
 st.markdown("""
-Upload your Tally ledger CSV file (must have columns: Date, Particulars, Vch Type, Vch No., Debit, Credit).
+Upload your Tally ledger Excel file (`.xlsx`).  
+The app will **automatically ignore the first 11 rows** (which typically contain company/header info).  
+Your file must have columns: Date, Particulars, Vch Type, Vch No., Debit, Credit starting from the 12th row.
 """)
 
-uploaded_file = st.file_uploader("Upload CSV", type="csv")
+uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
 
 if uploaded_file:
     try:
-        df = pd.read_csv(uploaded_file)
+        df = pd.read_excel(uploaded_file, skiprows=11)
         st.success("File uploaded and read successfully.")
         st.write("Preview:", df.head())
         table, grand_weighted = analyze_ledger(df)
         if table:
             st.markdown(f"### Grand Weighted Average Days Late: **{grand_weighted}**")
             st.dataframe(pd.DataFrame(table))
-            # PDF generation
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmpfile:
                 generate_pdf_report(table, grand_weighted, tmpfile.name)
                 tmpfile.seek(0)
@@ -173,4 +174,4 @@ if uploaded_file:
     except Exception as e:
         st.error(f"Error processing file: {e}")
 else:
-    st.info("Awaiting CSV file upload.")
+    st.info("Awaiting Excel file upload.")
