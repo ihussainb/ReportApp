@@ -153,7 +153,7 @@ uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
 
 if uploaded_file:
     try:
-        df = pd.read_excel(uploaded_file, skiprows=11)
+        df = pd.read_excel(uploaded_file, skiprows=12)
         st.success("File uploaded and read successfully.")
         st.write("Preview:", df.head())
         table, grand_weighted = analyze_ledger(df)
