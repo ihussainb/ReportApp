@@ -1,29 +1,11 @@
 import streamlit as st
 import pandas as pd
 import tempfile
-import plotly.express as px
-import matplotlib.pyplot as plt
-from datetime import datetime
+from datetime import datetime, timedelta
 from reportlab.lib.pagesizes import LETTER, landscape
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
-
-# Convert and clean dates
-results_df["Sale_Date_dt"] = pd.to_datetime(results_df["Sale_Date"], format="%d-%b-%y", errors='coerce')
-results_df = results_df.dropna(subset=["Sale_Date_dt"])
-
-if not results_df.empty:
-    fig = px.line(
-        results_df, 
-        x="Sale_Date_dt", 
-        y="Weighted_Days_Late", 
-        markers=True, 
-        title="Weighted Days Late Over Time"
-    )
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    st.warning("No data to plot.")
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 
 DATE_FMT = '%d-%b-%y'
 CREDIT_PERIOD_DAYS = 30
@@ -122,7 +104,7 @@ def analyze_ledger(df):
     grand_weighted = round(total_impact / total_amount, 2) if total_amount else 0.0
     return table, grand_weighted
 
-def generate_pdf_report(table, grand_weighted, filename, file_title, chart_path):
+def generate_pdf_report(table, grand_weighted, filename):
     doc = SimpleDocTemplate(
         filename,
         pagesize=landscape(LETTER),
@@ -133,16 +115,10 @@ def generate_pdf_report(table, grand_weighted, filename, file_title, chart_path)
     styleN = styles["BodyText"]
     styleH = styles["Heading1"]
     elements = []
-    # Report Heading using file_title
-    elements.append(Paragraph(f"{file_title} - Weighted Average Days to Pay Report", styleH))
+    elements.append(Paragraph("Weighted Average Days to Pay Report", styleH))
     elements.append(Spacer(1, 12))
     elements.append(Paragraph(f"Grand Weighted Average Days Late: <b>{grand_weighted}</b>", styleN))
     elements.append(Spacer(1, 24))
-    # Insert Chart
-    if chart_path:
-        elements.append(Image(chart_path, width=500, height=250))
-        elements.append(Spacer(1, 12))
-    # Table
     data = [["Sale Date", "Invoice No", "Sale Amount", "Weighted Days Late"]]
     for row in table:
         data.append([
@@ -167,44 +143,34 @@ def generate_pdf_report(table, grand_weighted, filename, file_title, chart_path)
     doc.build(elements)
 
 st.title("Ledger Weighted Average Days to Pay Report")
+st.markdown("""
+Upload your Tally ledger CSV file (must have columns: Date, Particulars, Vch Type, Vch No., Debit, Credit).
+""")
 
-uploaded_file = st.file_uploader("Upload your ledger CSV file", type=["csv"])
+uploaded_file = st.file_uploader("Upload CSV", type="csv")
+
 if uploaded_file:
-    # Get a clean display name for heading and PDF
-    file_title = uploaded_file.name.replace(".csv", "")
-    df = pd.read_csv(uploaded_file)
-    # run your analysis, this returns table, grand_weighted
-    table, grand_weighted = analyze_ledger(df)
-    results_df = pd.DataFrame(table)
-    st.metric("Grand Weighted Average Days Late", grand_weighted)
-    if not results_df.empty:
-        st.dataframe(results_df)
-        # --- Line Chart in Streamlit ---
-        results_df["Sale_Date_dt"] = pd.to_datetime(results_df["Sale_Date"], format="%d-%b-%y")
-        fig = px.line(results_df, x="Sale_Date_dt", y="Weighted_Days_Late", markers=True, title="Weighted Days Late Over Time")
-        st.plotly_chart(fig, use_container_width=True)
-        # --- Save matplotlib line chart for PDF ---
-        plt.figure(figsize=(10, 4))
-        plt.plot(results_df["Sale_Date_dt"], results_df["Weighted_Days_Late"], marker='o')
-        plt.xlabel("Sale Date")
-        plt.ylabel("Weighted Days Late")
-        plt.title("Weighted Days Late Over Time")
-        plt.tight_layout()
-        chart_file = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        plt.savefig(chart_file.name)
-        plt.close()
-        # --- PDF generation ---
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmpfile:
-            pdf_filename = f"WADP_Report_{file_title}.pdf"
-            generate_pdf_report(table, grand_weighted, tmpfile.name, file_title, chart_file.name)
-            tmpfile.seek(0)
-            st.download_button(
-                label="Download PDF Report",
-                data=tmpfile.read(),
-                file_name=pdf_filename,
-                mime="application/pdf"
-            )
-    else:
-        st.warning("No fully cleared invoices found in this data.")
+    try:
+        df = pd.read_csv(uploaded_file)
+        st.success("File uploaded and read successfully.")
+        st.write("Preview:", df.head())
+        table, grand_weighted = analyze_ledger(df)
+        if table:
+            st.markdown(f"### Grand Weighted Average Days Late: **{grand_weighted}**")
+            st.dataframe(pd.DataFrame(table))
+            # PDF generation
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmpfile:
+                generate_pdf_report(table, grand_weighted, tmpfile.name)
+                tmpfile.seek(0)
+                st.download_button(
+                    label="Download PDF Report",
+                    data=tmpfile.read(),
+                    file_name="WADP_Report.pdf",
+                    mime="application/pdf"
+                )
+        else:
+            st.warning("No fully cleared invoices found in this data.")
+    except Exception as e:
+        st.error(f"Error processing file: {e}")
 else:
     st.info("Awaiting CSV file upload.")
