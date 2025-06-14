@@ -5,8 +5,8 @@ import tempfile
 from datetime import datetime, timedelta
 from reportlab.lib.pagesizes import LETTER, landscape
 from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image, PageBreak
 import matplotlib.pyplot as plt
 
 DATE_FMT = '%d-%b-%y'
@@ -101,10 +101,6 @@ def analyze_ledger(df):
     total_amount = 0.0
     for sale in sales:
         remaining = sale['remaining']
-        status = (
-            "Paid" if abs(remaining) < 1e-2 else
-            ("Partial" if sale['payments'] else "Unpaid")
-        )
         total_per_invoice = 0.0
         for pay in sale['payments']:
             days_late = (pay['pay_date'] - sale['due_date']).days
@@ -116,43 +112,30 @@ def analyze_ledger(df):
             'Sale_Amount': sale['amount'],
             'Weighted_Days_Late': round(weighted_days, 2),
             'Amount_Remaining': round(remaining, 2),
-            'Status': status,
-            'Payments': sale['payments'],
             'Due_Date': sale['due_date']
         })
-        if status == "Paid":
+        # For grand weighted average, only consider fully paid invoices
+        if abs(remaining) < 1e-2:
             total_impact += total_per_invoice
             total_amount += sale['amount']
 
-    # Calculate quarters and quarterly weighted averages
     df_rows = pd.DataFrame(rows)
     df_rows['Sale_Quarter'] = df_rows['Sale_Date'].apply(get_quarter)
-    paid = df_rows[df_rows['Status'] == 'Paid']
+    paid = df_rows[df_rows['Amount_Remaining'] < 0.01]
 
-    # Compute quarterly weighted averages (by Sale_Quarter)
     qtr_to_avg = {}
     for q, g in paid.groupby('Sale_Quarter'):
         qtr_avg = np.average(g['Weighted_Days_Late'], weights=g['Sale_Amount'])
         qtr_to_avg[q] = round(qtr_avg, 2)
 
-    # Add column to each row with its quarter's average
-    df_rows['Quarterly Weighted Avg Days Late'] = df_rows['Sale_Quarter'].apply(lambda q: qtr_to_avg.get(q, np.nan))
-
-    # Prepare summary for display at the top
-    qtr_summary = pd.DataFrame([
-        {"Quarter": q, "Quarterly Weighted Avg Days Late": avg}
-        for q, avg in qtr_to_avg.items()
-    ]).sort_values("Quarter")
-
-    # Format for display
     df_rows['Sale_Date'] = df_rows['Sale_Date'].dt.strftime('%d-%b-%y')
     df_rows['Due_Date'] = df_rows['Due_Date'].dt.strftime('%d-%b-%y')
 
     grand_weighted = round(total_impact / total_amount, 2) if total_amount else 0.0
 
-    return df_rows, grand_weighted, qtr_summary, problematic_rows
+    return df_rows, grand_weighted, qtr_to_avg, problematic_rows
 
-def generate_pdf_report(df_rows, grand_weighted, qtr_summary, filename, chart_path=None):
+def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, filename, chart_path=None):
     doc = SimpleDocTemplate(
         filename,
         pagesize=landscape(LETTER),
@@ -162,45 +145,53 @@ def generate_pdf_report(df_rows, grand_weighted, qtr_summary, filename, chart_pa
     styles = getSampleStyleSheet()
     styleN = styles["BodyText"]
     styleH = styles["Heading1"]
+    styleQ = ParagraphStyle('QuarterStyle', parent=styles['Heading2'], spaceAfter=4, spaceBefore=12, textColor=colors.HexColor("#003366"))
+
     elements = []
     elements.append(Paragraph("Weighted Average Days to Pay Report", styleH))
     elements.append(Spacer(1, 12))
     elements.append(Paragraph(f"Grand Weighted Average Days Late: <b>{grand_weighted}</b>", styleN))
     elements.append(Spacer(1, 12))
-    if not qtr_summary.empty:
-        for idx, row in qtr_summary.iterrows():
-            elements.append(Paragraph(f"{row['Quarter']}: <b>{row['Quarterly Weighted Avg Days Late']}</b>", styleN))
-    elements.append(Spacer(1, 24))
+    # List quarterly averages at the top
+    for q in sorted(qtr_to_avg.keys()):
+        elements.append(Paragraph(f"{q}: <b>{qtr_to_avg[q]}</b>", styleN))
+    elements.append(Spacer(1, 18))
     if chart_path:
         elements.append(Image(chart_path, width=500, height=250))
-        elements.append(Spacer(1, 24))
-    data = [["Sale Date", "Invoice No", "Sale Amount", "Weighted Days Late", "Quarterly Weighted Avg Days Late", "Amount Remaining", "Status"]]
-    for _, row in df_rows.iterrows():
-        data.append([
-            row["Sale_Date"],
-            row["Invoice_No"],
-            f"{row['Sale_Amount']:,.2f}",
-            f"{row['Weighted_Days_Late']:.2f}",
-            f"{row['Quarterly Weighted Avg Days Late']:.2f}" if pd.notnull(row['Quarterly Weighted Avg Days Late']) else "",
-            f"{row['Amount_Remaining']:,.2f}",
-            row["Status"]
-        ])
-    t = Table(data, colWidths=[90, 140, 100, 120, 160, 120, 100])
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#003366")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("ALIGN", (2, 1), (5, -1), "RIGHT"),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, 0), 11),
-        ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
-        ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f6f6f6")),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#e6e6e6")]),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.gray),
-    ]))
-    elements.append(t)
+        elements.append(Spacer(1, 18))
+
+    # Now build the grouped table by quarter
+    quarters = df_rows['Sale_Quarter'].unique()
+    table_header = ["Sale Date", "Invoice No", "Sale Amount", "Weighted Days Late", "Amount Remaining"]
+    for q in sorted(quarters):
+        q_rows = df_rows[df_rows['Sale_Quarter'] == q]
+        elements.append(Paragraph(f"{q}: Weighted Average Days Late = {qtr_to_avg.get(q, '')}", styleQ))
+        data = [table_header]
+        for _, row in q_rows.iterrows():
+            data.append([
+                row["Sale_Date"],
+                row["Invoice_No"],
+                f"{row['Sale_Amount']:,.2f}",
+                f"{row['Weighted_Days_Late']:.2f}",
+                f"{row['Amount_Remaining']:,.2f}",
+            ])
+        t = Table(data, colWidths=[90, 140, 100, 120, 120])
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#003366")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("ALIGN", (2, 1), (4, -1), "RIGHT"),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, 0), 11),
+            ("BOTTOMPADDING", (0, 0), (-1, 0), 10),
+            ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f6f6f6")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#e6e6e6")]),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.gray),
+        ]))
+        elements.append(t)
+        elements.append(Spacer(1, 18))
     doc.build(elements)
 
-st.title("Ledger Weighted Average Days to Pay Report (with Quarterly Average Column)")
+st.title("Ledger Weighted Average Days to Pay Report (Quarterly Grouped)")
 st.markdown("""
 Upload your Tally ledger CSV file (must have columns: Date, Particulars, Vch Type, Vch No., Debit, Credit).
 """)
@@ -215,40 +206,43 @@ if uploaded_file:
             st.stop()
         st.success("File uploaded and read successfully.")
         st.write("Preview:", df.head())
-        df_rows, grand_weighted, qtr_summary, problematic_rows = analyze_ledger(df)
+        df_rows, grand_weighted, qtr_to_avg, problematic_rows = analyze_ledger(df)
         if not df_rows.empty:
             st.markdown(f"### Grand Weighted Average Days Late: **{grand_weighted}**")
-            if not qtr_summary.empty:
-                st.markdown("#### Quarterly Weighted Average Days Late (by Invoice Date):")
-                for idx, row in qtr_summary.iterrows():
-                    st.markdown(f"- **{row['Quarter']}**: {row['Quarterly Weighted Avg Days Late']}")
-            st.dataframe(df_rows[
-                ["Sale_Date", "Invoice_No", "Sale_Amount", "Weighted_Days_Late",
-                 "Quarterly Weighted Avg Days Late", "Amount_Remaining", "Status"]
-            ])
-
-            # Visualization: Line chart of Weighted Days Late over Sale Date
+            st.markdown("#### Quarterly Weighted Average Days Late (by Invoice Date):")
+            for q in sorted(qtr_to_avg.keys()):
+                st.markdown(f"- **{q}**: {qtr_to_avg[q]}")
+            # Display grouped DataFrame table
+            for q in sorted(df_rows['Sale_Quarter'].unique()):
+                st.markdown(f"### {q}: Weighted Average Days Late = {qtr_to_avg.get(q, '')}")
+                q_rows = df_rows[df_rows['Sale_Quarter'] == q]
+                st.dataframe(q_rows[
+                    ["Sale_Date", "Invoice_No", "Sale_Amount", "Weighted_Days_Late", "Amount_Remaining"]
+                ])
+            # Chart
             df_rows["Sale_Date_dt"] = pd.to_datetime(df_rows["Sale_Date"], format="%d-%b-%y", errors="coerce")
             df_rows = df_rows.dropna(subset=["Sale_Date_dt"])
             df_rows = df_rows.sort_values("Sale_Date_dt")
             fig, ax = plt.subplots(figsize=(10, 4))
             ax.plot(df_rows["Sale_Date_dt"], df_rows["Weighted_Days_Late"], marker="o", label="Weighted Days Late")
-            ax.plot(df_rows["Sale_Date_dt"], df_rows["Quarterly Weighted Avg Days Late"], linestyle="--", color="orange", label="Quarterly Avg")
+            # Overlay quarterly averages
+            for q in sorted(qtr_to_avg.keys()):
+                q_mask = df_rows['Sale_Quarter'] == q
+                if q_mask.any():
+                    ax.axhline(qtr_to_avg[q], color='orange', linestyle='--', alpha=0.3)
             ax.set_xlabel("Sale Date")
             ax.set_ylabel("Days Late")
-            ax.set_title("Weighted Days Late (with Quarterly Average) Over Time")
+            ax.set_title("Weighted Days Late (with Quarterly Averages) Over Time")
             ax.legend()
             plt.grid(True)
             st.pyplot(fig, use_container_width=True)
-
             # Save the chart as image for PDF
             chart_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
             fig.savefig(chart_temp.name, bbox_inches='tight')
             plt.close(fig)
-
             # PDF generation with chart
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmpfile:
-                generate_pdf_report(df_rows, grand_weighted, qtr_summary, tmpfile.name, chart_path=chart_temp.name)
+                generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, tmpfile.name, chart_path=chart_temp.name)
                 tmpfile.seek(0)
                 st.download_button(
                     label="Download PDF Report",
@@ -258,12 +252,10 @@ if uploaded_file:
                 )
         else:
             st.warning("No sales found in this data.")
-
         # Show problematic date rows, if any
         if len(problematic_rows) > 0:
             st.markdown("#### ⚠️ The following rows have problematic or missing dates and were skipped:")
             st.dataframe(pd.DataFrame(problematic_rows))
-
     except Exception as e:
         st.error(f"Error processing file: {e}")
 else:
