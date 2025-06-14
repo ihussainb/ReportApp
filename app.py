@@ -1,11 +1,11 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import tempfile
 import os
-from datetime import datetime, timedelta
+from datetime import timedelta
+from io import BytesIO
 from reportlab.lib.pagesizes import LETTER, landscape
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 import matplotlib.pyplot as plt
@@ -137,26 +137,16 @@ def analyze_ledger(df):
 
 def add_first_page_elements(elements, filename, grand_weighted, qtr_to_avg):
     styles = getSampleStyleSheet()
-    # Title: centered, large, bold, with filename only (not full path)
     title_style = ParagraphStyle(
-        'Title',
-        parent=styles['Title'],
-        alignment=1,  # center
-        fontSize=22,
-        spaceAfter=16,
-        leading=26,
+        'Title', parent=styles['Title'], alignment=1, fontSize=22,
+        spaceAfter=16, leading=26,
     )
     clean_filename = os.path.basename(filename)
     elements.append(Paragraph(f"{clean_filename} Weighted Average Days to Pay Report", title_style))
     elements.append(Spacer(1, 20))
-    # Grand weighted average: centered, bold
     grand_style = ParagraphStyle(
-        'Grand',
-        parent=styles['Heading2'],
-        alignment=1,  # center
-        fontSize=16,
-        textColor=colors.HexColor("#003366"),
-        leading=20,
+        'Grand', parent=styles['Heading2'], alignment=1,
+        fontSize=16, textColor=colors.HexColor("#003366"), leading=20,
     )
     elements.append(Paragraph(f"Grand Weighted Average Days Late: <b>{grand_weighted}</b>", grand_style))
     elements.append(Spacer(1, 18))
@@ -183,20 +173,26 @@ def add_first_page_elements(elements, filename, grand_weighted, qtr_to_avg):
     elements.append(Spacer(1, 20))
 
 def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, filename, chart_path=None):
+    buffer = filename if hasattr(filename, "write") else open(filename, "wb")
     doc = SimpleDocTemplate(
-        filename,
+        buffer,
         pagesize=landscape(LETTER),
         rightMargin=30, leftMargin=30,
         topMargin=30, bottomMargin=30,
     )
     elements = []
-    add_first_page_elements(elements, filename, grand_weighted, qtr_to_avg)
+    # PDF "filename" could be a BytesIO, or string path, or open file.
+    # Use the original filename string for title even if BytesIO
+    title_for_pdf = filename.name if hasattr(filename, "name") else filename
+    add_first_page_elements(elements, title_for_pdf, grand_weighted, qtr_to_avg)
     if chart_path:
         elements.append(Image(chart_path, width=500, height=250))
         elements.append(Spacer(1, 18))
-    # Grouped table by quarter
     styles = getSampleStyleSheet()
-    styleQ = ParagraphStyle('QuarterStyle', parent=styles['Heading2'], spaceAfter=4, spaceBefore=12, textColor=colors.HexColor("#003366"))
+    styleQ = ParagraphStyle(
+        'QuarterStyle', parent=styles['Heading2'],
+        spaceAfter=4, spaceBefore=12, textColor=colors.HexColor("#003366")
+    )
     quarters = df_rows['Sale_Quarter'].unique()
     table_header = ["Sale Date", "Invoice No", "Sale Amount", "Weighted Days Late", "Amount Remaining"]
     for q in sorted(quarters):
@@ -226,6 +222,8 @@ def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, filename, c
         elements.append(t)
         elements.append(Spacer(1, 18))
     doc.build(elements)
+    if not hasattr(filename, "write"):  # if we opened a file, close it
+        buffer.close()
 
 st.title("Ledger Weighted Average Days to Pay Report (Quarterly Grouped)")
 st.markdown("""
@@ -276,16 +274,16 @@ if uploaded_file:
             chart_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
             fig.savefig(chart_temp.name, bbox_inches='tight')
             plt.close(fig)
-            # PDF generation with chart
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmpfile:
-                generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, uploaded_file.name, chart_path=chart_temp.name)
-                tmpfile.seek(0)
-                st.download_button(
-                    label="Download PDF Report",
-                    data=tmpfile.read(),
-                    file_name="WADP_Report.pdf",
-                    mime="application/pdf"
-                )
+            # PDF generation with chart - BytesIO for Streamlit download
+            pdf_buffer = BytesIO()
+            generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, pdf_buffer, chart_path=chart_temp.name)
+            pdf_buffer.seek(0)
+            st.download_button(
+                label="Download PDF Report",
+                data=pdf_buffer,
+                file_name="WADP_Report.pdf",
+                mime="application/pdf"
+            )
         else:
             st.warning("No sales found in this data.")
         # Show problematic date rows, if any
