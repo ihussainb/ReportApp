@@ -144,46 +144,43 @@ def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg):
 
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
-        'Title', parent=styles['Title'], alignment=1, fontSize=22,
-        spaceAfter=16, leading=26,
+        'Title', parent=styles['Title'], alignment=1, fontSize=20,
+        spaceAfter=10, leading=24,
     )
-    clean_filename = os.path.basename(report_title)
-    elements.append(Paragraph(f"{clean_filename} Weighted Average Days to Pay Report", title_style))
-    elements.append(Spacer(1, 20))
-
+    subtitle_style = ParagraphStyle(
+        'Subtitle', parent=styles['Title'], alignment=1, fontSize=16,
+        spaceAfter=8, leading=20,
+    )
     grand_style = ParagraphStyle(
         'Grand', parent=styles['Heading2'], alignment=1,
-        fontSize=16, textColor=colors.HexColor("#003366"), leading=20,
+        fontSize=14, textColor=colors.HexColor("#003366"), leading=18,
     )
-    elements.append(Paragraph(f"Grand Weighted Average Days Late: <b>{grand_weighted}</b>", grand_style))
-    elements.append(Spacer(1, 18))
 
-    # Quarterly averages as a 3-column table
-    qtrs = sorted(qtr_to_avg.keys())
-    data = []
-    row = []
-    for idx, q in enumerate(qtrs):
-        row.append(f"<b>{q}</b>: {qtr_to_avg[q]}")
-        if (idx + 1) % 3 == 0:
-            data.append(row)
-            row = []
-    if row:
-        # Fill up to 3 columns with empty strings for last row if needed
-        while len(row) < 3:
-            row.append("")
-        data.append(row)
-    qtr_table = Table(data, colWidths=[170, 170, 170], hAlign='CENTER', style=[
-        ("FONTNAME", (0,0), (-1,-1), "Helvetica"),
-        ("FONTSIZE", (0,0), (-1,-1), 13),
+    clean_filename = os.path.basename(report_title)
+    elements.append(Paragraph(f"{clean_filename}", title_style))
+    elements.append(Paragraph("Weighted Average Days & Quarterly to Pay Report", subtitle_style))
+    elements.append(Spacer(1, 10))
+    elements.append(Paragraph(f"Grand Weighted Average Days Late: <b>{grand_weighted}</b>", grand_style))
+    elements.append(Spacer(1, 16))
+
+    # Table for quarterly averages
+    data = [["Quarter", "Weighted Avg Days Late"]]
+    for q in sorted(qtr_to_avg.keys()):
+        data.append([q, f"{qtr_to_avg[q]:.2f}"])
+    table = Table(data, colWidths=[190, 190], hAlign='CENTER')
+    table.setStyle(TableStyle([
+        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+        ("FONTSIZE", (0,0), (-1,0), 13),
         ("ALIGN", (0,0), (-1,-1), "CENTER"),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 8),
-        ("TOPPADDING", (0,0), (-1,-1), 8),
-        ("TEXTCOLOR", (0,0), (-1,-1), colors.HexColor("#003366")),
-        ("BOX", (0,0), (-1,-1), 0.5, colors.HexColor("#bbbbbb")),
-        ("INNERGRID", (0,0), (-1,-1), 0.5, colors.HexColor("#cccccc")),
-        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
-    ])
-    elements.append(qtr_table)
+        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#003366")),
+        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#f0f0f0")]),
+        ("GRID", (0,0), (-1,-1), 0.3, colors.gray),
+        ("FONTSIZE", (0,1), (-1,-1), 12),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 6),
+        ("TOPPADDING", (0,0), (-1,-1), 6),
+    ]))
+    elements.append(table)
     elements.append(Spacer(1, 20))
 
 def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, buffer, report_title, chart_path=None):
