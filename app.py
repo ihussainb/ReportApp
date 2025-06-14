@@ -137,6 +137,11 @@ def analyze_ledger(df):
     return df_rows, grand_weighted, qtr_to_avg, problematic_rows
 
 def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg):
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib import colors
+    import os
+
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
         'Title', parent=styles['Title'], alignment=1, fontSize=22,
@@ -145,13 +150,15 @@ def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg):
     clean_filename = os.path.basename(report_title)
     elements.append(Paragraph(f"{clean_filename} Weighted Average Days to Pay Report", title_style))
     elements.append(Spacer(1, 20))
+
     grand_style = ParagraphStyle(
         'Grand', parent=styles['Heading2'], alignment=1,
         fontSize=16, textColor=colors.HexColor("#003366"), leading=20,
     )
     elements.append(Paragraph(f"Grand Weighted Average Days Late: <b>{grand_weighted}</b>", grand_style))
     elements.append(Spacer(1, 18))
-    # Quarterly averages as a 3-column grid
+
+    # Quarterly averages as a 3-column table
     qtrs = sorted(qtr_to_avg.keys())
     data = []
     row = []
@@ -161,14 +168,20 @@ def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg):
             data.append(row)
             row = []
     if row:
+        # Fill up to 3 columns with empty strings for last row if needed
+        while len(row) < 3:
+            row.append("")
         data.append(row)
-    qtr_table = Table(data, style=[
+    qtr_table = Table(data, colWidths=[170, 170, 170], hAlign='CENTER', style=[
         ("FONTNAME", (0,0), (-1,-1), "Helvetica"),
-        ("FONTSIZE", (0,0), (-1,-1), 12),
+        ("FONTSIZE", (0,0), (-1,-1), 13),
         ("ALIGN", (0,0), (-1,-1), "CENTER"),
         ("BOTTOMPADDING", (0,0), (-1,-1), 8),
         ("TOPPADDING", (0,0), (-1,-1), 8),
         ("TEXTCOLOR", (0,0), (-1,-1), colors.HexColor("#003366")),
+        ("BOX", (0,0), (-1,-1), 0.5, colors.HexColor("#bbbbbb")),
+        ("INNERGRID", (0,0), (-1,-1), 0.5, colors.HexColor("#cccccc")),
+        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
     ])
     elements.append(qtr_table)
     elements.append(Spacer(1, 20))
