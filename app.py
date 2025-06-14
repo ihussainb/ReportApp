@@ -1,8 +1,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import tempfile
 import os
+import tempfile
 from datetime import timedelta
 from io import BytesIO
 from reportlab.lib.pagesizes import LETTER, landscape
@@ -136,13 +136,13 @@ def analyze_ledger(df):
 
     return df_rows, grand_weighted, qtr_to_avg, problematic_rows
 
-def add_first_page_elements(elements, filename, grand_weighted, qtr_to_avg):
+def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg):
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
         'Title', parent=styles['Title'], alignment=1, fontSize=22,
         spaceAfter=16, leading=26,
     )
-    clean_filename = os.path.basename(filename)
+    clean_filename = os.path.basename(report_title)
     elements.append(Paragraph(f"{clean_filename} Weighted Average Days to Pay Report", title_style))
     elements.append(Spacer(1, 20))
     grand_style = ParagraphStyle(
@@ -173,12 +173,7 @@ def add_first_page_elements(elements, filename, grand_weighted, qtr_to_avg):
     elements.append(qtr_table)
     elements.append(Spacer(1, 20))
 
-def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, buffer, chart_path=None):
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
-    from reportlab.lib.pagesizes import LETTER, landscape
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib import colors
-
+def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, buffer, report_title, chart_path=None):
     doc = SimpleDocTemplate(
         buffer,
         pagesize=landscape(LETTER),
@@ -186,8 +181,7 @@ def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, buffer, cha
         topMargin=30, bottomMargin=30,
     )
     elements = []
-    # Use a string for the report title; you can pass the filename if you want
-    add_first_page_elements(elements, "Report", grand_weighted, qtr_to_avg)
+    add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg)
     if chart_path:
         elements.append(Image(chart_path, width=500, height=250))
         elements.append(Spacer(1, 18))
@@ -225,8 +219,6 @@ def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, buffer, cha
         elements.append(t)
         elements.append(Spacer(1, 18))
     doc.build(elements)
-    if not hasattr(filename, "write"):  # if we opened a file, close it
-        buffer.close()
 
 st.title("Ledger Weighted Average Days to Pay Report (Quarterly Grouped)")
 st.markdown("""
@@ -279,7 +271,14 @@ if uploaded_file:
             plt.close(fig)
             # PDF generation with chart - BytesIO for Streamlit download
             pdf_buffer = BytesIO()
-            generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, pdf_buffer, chart_path=chart_temp.name)
+            generate_pdf_report_grouped(
+                df_rows,
+                grand_weighted,
+                qtr_to_avg,
+                pdf_buffer,
+                uploaded_file.name,
+                chart_path=chart_temp.name
+            )
             pdf_buffer.seek(0)
             st.download_button(
                 label="Download PDF Report",
