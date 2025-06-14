@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import tempfile
 from datetime import datetime, timedelta
 from reportlab.lib.pagesizes import LETTER, landscape
@@ -13,16 +14,19 @@ CREDIT_PERIOD_DAYS = 30
 EXCLUDE_TYPES = {'CREDIT NOTE - C25', 'JOURNAL - C25'}
 
 def robust_parse_dates(df, date_col="Date"):
-    # Try the expected format first
     dt = pd.to_datetime(df[date_col], format=DATE_FMT, errors='coerce')
-    # Where parsing failed, try generic parsing (handles many other formats)
     mask = dt.isna()
     if mask.any():
         dt_alt = pd.to_datetime(df.loc[mask, date_col], errors='coerce')
         dt.loc[mask] = dt_alt
-    # Return the parsed date column and the indices where parsing still failed
     failed = df[date_col][dt.isna()]
     return dt, failed
+
+def parse_float(s):
+    try:
+        return float(str(s).replace(',', '').strip()) if s and str(s).strip() else 0.0
+    except Exception:
+        return 0.0
 
 @st.cache_data(show_spinner=False)
 def analyze_ledger(df):
@@ -30,7 +34,6 @@ def analyze_ledger(df):
     payments = []
     problematic_rows = []
 
-    # Robustly parse dates
     df["Parsed_Date"], parse_failures = robust_parse_dates(df, "Date")
 
     for idx, row in df.iterrows():
@@ -111,7 +114,9 @@ def analyze_ledger(df):
             'Sale_Amount': sale['amount'],
             'Weighted_Days_Late': round(weighted_days, 2),
             'Amount_Remaining': round(remaining, 2),
-            'Status': status
+            'Status': status,
+            'Payments': sale['payments'],
+            'Due_Date': sale['due_date'].strftime('%d-%b-%y')
         })
         if status == "Paid":
             total_impact += total_per_invoice
@@ -119,11 +124,45 @@ def analyze_ledger(df):
     grand_weighted = round(total_impact / total_amount, 2) if total_amount else 0.0
     return table, grand_weighted, problematic_rows
 
-def parse_float(s):
-    try:
-        return float(str(s).replace(',', '').strip()) if s and str(s).strip() else 0.0
-    except Exception:
-        return 0.0
+def get_quarter(dt):
+    return f"{dt.year}-Q{((dt.month-1)//3)+1}"
+
+def compute_quarterly_averages(table):
+    df = pd.DataFrame(table)
+    df['Sale_Date_dt'] = pd.to_datetime(df['Sale_Date'], format='%d-%b-%y', errors='coerce')
+    df['Sale_Quarter'] = df['Sale_Date_dt'].apply(get_quarter)
+    paid = df[df['Status'] == 'Paid']
+    # Invoice-based quarterly weighted avg (weighted by invoice amount)
+    quarterly_invoice = (
+        paid.groupby('Sale_Quarter')
+            .apply(lambda g: np.average(g['Weighted_Days_Late'], weights=g['Sale_Amount']))
+            .reset_index(name='Quarterly_Weighted_Avg_Invoice')
+    )
+
+    # Payment-based quarterly calculation
+    payment_rows = []
+    for row in table:
+        if row['Payments']:
+            sale_due = pd.to_datetime(row['Due_Date'], format='%d-%b-%y', errors='coerce')
+            for p in row['Payments']:
+                days_late = (p['pay_date'] - sale_due).days
+                payment_rows.append({
+                    'Payment_Date': p['pay_date'],
+                    'Amount': p['pay_amt'],
+                    'Days_Late': days_late
+                })
+    if payment_rows:
+        payment_df = pd.DataFrame(payment_rows)
+        payment_df['Payment_Quarter'] = payment_df['Payment_Date'].apply(get_quarter)
+        quarterly_payment = (
+            payment_df.groupby('Payment_Quarter')
+            .apply(lambda g: np.average(g['Days_Late'], weights=g['Amount']))
+            .reset_index(name='Quarterly_Weighted_Avg_Payment')
+        )
+    else:
+        quarterly_payment = pd.DataFrame(columns=['Payment_Quarter', 'Quarterly_Weighted_Avg_Payment'])
+
+    return quarterly_invoice, quarterly_payment
 
 def generate_pdf_report(table, grand_weighted, filename, chart_path=None):
     doc = SimpleDocTemplate(
@@ -168,7 +207,7 @@ def generate_pdf_report(table, grand_weighted, filename, chart_path=None):
     elements.append(t)
     doc.build(elements)
 
-st.title("Ledger Weighted Average Days to Pay Report")
+st.title("Ledger Weighted Average Days to Pay Report (with Quarterly Analysis)")
 st.markdown("""
 Upload your Tally ledger CSV file (must have columns: Date, Particulars, Vch Type, Vch No., Debit, Credit).
 """)
@@ -188,6 +227,13 @@ if uploaded_file:
             st.markdown(f"### Grand Weighted Average Days Late: **{grand_weighted}**")
             df_results = pd.DataFrame(table)
             st.dataframe(df_results)
+
+            # Quarterly analysis
+            quarterly_invoice, quarterly_payment = compute_quarterly_averages(table)
+            st.markdown("### Quarterly Weighted Average Days Late (Invoices)")
+            st.dataframe(quarterly_invoice)
+            st.markdown("### Quarterly Weighted Average Days Late (Payments)")
+            st.dataframe(quarterly_payment)
 
             # Visualization: Line chart of Weighted Days Late over Sale Date
             df_results["Sale_Date_dt"] = pd.to_datetime(df_results["Sale_Date"], format="%d-%b-%y", errors="coerce")
