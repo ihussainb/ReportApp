@@ -173,8 +173,12 @@ def add_first_page_elements(elements, filename, grand_weighted, qtr_to_avg):
     elements.append(qtr_table)
     elements.append(Spacer(1, 20))
 
-def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, filename, chart_path=None):
-    buffer = filename if hasattr(filename, "write") else open(filename, "wb")
+def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, buffer, chart_path=None):
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+    from reportlab.lib.pagesizes import LETTER, landscape
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib import colors
+
     doc = SimpleDocTemplate(
         buffer,
         pagesize=landscape(LETTER),
@@ -182,10 +186,8 @@ def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, filename, c
         topMargin=30, bottomMargin=30,
     )
     elements = []
-    # PDF "filename" could be a BytesIO, or string path, or open file.
-    # Use the original filename string for title even if BytesIO
-    title_for_pdf = filename.name if hasattr(filename, "name") else filename
-    add_first_page_elements(elements, title_for_pdf, grand_weighted, qtr_to_avg)
+    # Use a string for the report title; you can pass the filename if you want
+    add_first_page_elements(elements, "Report", grand_weighted, qtr_to_avg)
     if chart_path:
         elements.append(Image(chart_path, width=500, height=250))
         elements.append(Spacer(1, 18))
