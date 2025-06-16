@@ -16,11 +16,11 @@ CREDIT_PERIOD_DAYS = 30
 EXCLUDE_TYPES = {'CREDIT NOTE - C25', 'JOURNAL - C25'}
 
 # Fiscal year quarters for India (April to March)
-FISCAL_QUARTERS = {
-    1: ("Q1", "April", "May", "June"),
-    2: ("Q2", "July", "August", "September"),
-    3: ("Q3", "October", "November", "December"),
-    4: ("Q4", "January", "February", "March"),
+FQ_LABELS = {
+    1: ("Q1", "Apr–Jun"),
+    2: ("Q2", "Jul–Sep"),
+    3: ("Q3", "Oct–Dec"),
+    4: ("Q4", "Jan–Mar")
 }
 
 def robust_parse_dates(df, date_col="Date"):
@@ -38,25 +38,25 @@ def parse_float(s):
     except Exception:
         return 0.0
 
-def get_fiscal_quarter(dt):
-    # Fiscal year in India: April-March
-    # Q1: Apr-Jun, Q2: Jul-Sep, Q3: Oct-Dec, Q4: Jan-Mar
+def get_fiscal_quarter_info(dt):
+    """Return fiscal year, quarter num, and formatted label for Indian fiscal year."""
     month = dt.month
     year = dt.year
     if month >= 4 and month <= 6:
-        qtr = 1
+        quarter = 1
         fiscal_year = year
     elif month >= 7 and month <= 9:
-        qtr = 2
+        quarter = 2
         fiscal_year = year
     elif month >= 10 and month <= 12:
-        qtr = 3
+        quarter = 3
         fiscal_year = year
-    else: # Jan, Feb, Mar
-        qtr = 4
-        fiscal_year = year - 1  # Jan-Mar belong to previous fiscal year
-    qtr_name, m1, m2, m3 = FISCAL_QUARTERS[qtr]
-    return f"{fiscal_year} ({m1}, {m2}, {m3})"
+    else:  # Jan-Mar
+        quarter = 4
+        fiscal_year = year - 1  # Belongs to previous fiscal year
+    qtr_code, qtr_months = FQ_LABELS[quarter]
+    label = f"FY{fiscal_year} {qtr_code} ({qtr_months})"
+    return fiscal_year, quarter, label
 
 @st.cache_data(show_spinner=False)
 def analyze_ledger(df):
@@ -146,13 +146,18 @@ def analyze_ledger(df):
             total_amount += sale['amount']
 
     df_rows = pd.DataFrame(rows)
-    df_rows['Sale_Quarter'] = df_rows['Sale_Date'].apply(get_fiscal_quarter)
+    # Assign fiscal year, quarter, and formatted label
+    fiscal_info = df_rows['Sale_Date'].apply(lambda d: get_fiscal_quarter_info(pd.to_datetime(d)))
+    df_rows[['Fiscal_Year', 'Fiscal_Quarter', 'Quarter_Label']] = pd.DataFrame(list(fiscal_info))
     paid = df_rows[df_rows['Amount_Remaining'] < 0.01]
 
+    # Sort by fiscal year and quarter
+    paid = paid.sort_values(['Fiscal_Year', 'Fiscal_Quarter'])
     qtr_to_avg = {}
-    for q, g in paid.groupby('Sale_Quarter'):
-        qtr_avg = np.average(g['Weighted_Days_Late'], weights=g['Sale_Amount'])
-        qtr_to_avg[q] = round(qtr_avg, 2)
+    for _, group in paid.groupby(['Fiscal_Year', 'Fiscal_Quarter', 'Quarter_Label']):
+        label = group['Quarter_Label'].iloc[0]
+        qtr_avg = np.average(group['Weighted_Days_Late'], weights=group['Sale_Amount'])
+        qtr_to_avg[label] = round(qtr_avg, 2)
 
     df_rows['Sale_Date'] = df_rows['Sale_Date'].dt.strftime('%d-%b-%y')
     df_rows['Due_Date'] = df_rows['Due_Date'].dt.strftime('%d-%b-%y')
@@ -176,6 +181,9 @@ def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg):
         'Subtitle', parent=styles['Title'], alignment=1, fontSize=16,
         spaceAfter=8, leading=20,
     )
+    note_style = ParagraphStyle(
+        'Note', alignment=1, fontSize=10, textColor=colors.HexColor("#666666"), spaceAfter=8
+    )
     grand_style = ParagraphStyle(
         'Grand', parent=styles['Heading2'], alignment=1,
         fontSize=14, textColor=colors.HexColor("#003366"), leading=18,
@@ -185,13 +193,16 @@ def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg):
     clean_filename = os.path.splitext(os.path.basename(report_title))[0]
     elements.append(Paragraph(f"{clean_filename}", title_style))
     elements.append(Paragraph("Weighted Average Days & Quarterly to Pay Report", subtitle_style))
-    elements.append(Spacer(1, 10))
+    elements.append(Paragraph(
+        "All calculations are based on a 30-day payment deadline for each invoice.",
+        note_style
+    ))
     elements.append(Paragraph(f"Grand Weighted Average Days Late: <b>{grand_weighted}</b>", grand_style))
     elements.append(Spacer(1, 16))
 
     # Table for quarterly averages
     data = [["Quarter (Months)", "Weighted Avg Days Late"]]
-    for q in sorted(qtr_to_avg.keys()):
+    for q in qtr_to_avg.keys():
         data.append([q, f"{qtr_to_avg[q]:.2f}"])
     table = Table(data, colWidths=[250, 190], hAlign='CENTER')
     table.setStyle(TableStyle([
@@ -226,11 +237,15 @@ def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, buffer, rep
         'QuarterStyle', parent=styles['Heading2'],
         spaceAfter=4, spaceBefore=12, textColor=colors.HexColor("#003366")
     )
-    quarters = df_rows['Sale_Quarter'].unique()
+    # Get unique, sorted quarter labels based on fiscal year/quarter order
+    unique_quarters = df_rows.drop_duplicates(subset=["Quarter_Label"])[
+        ["Fiscal_Year", "Fiscal_Quarter", "Quarter_Label"]
+    ].sort_values(["Fiscal_Year", "Fiscal_Quarter"])
     table_header = ["Sale Date", "Invoice No", "Sale Amount", "Weighted Days Late", "Amount Remaining"]
-    for q in sorted(quarters):
-        q_rows = df_rows[df_rows['Sale_Quarter'] == q]
-        elements.append(Paragraph(f"{q}: Weighted Average Days Late = {qtr_to_avg.get(q, '')}", styleQ))
+    for _, quarter_row in unique_quarters.iterrows():
+        qlabel = quarter_row["Quarter_Label"]
+        q_rows = df_rows[df_rows["Quarter_Label"] == qlabel]
+        elements.append(Paragraph(f"{qlabel}: Weighted Average Days Late = {qtr_to_avg.get(qlabel, '')}", styleQ))
         data = [table_header]
         for _, row in q_rows.iterrows():
             data.append([
@@ -275,12 +290,16 @@ if uploaded_file:
         if not df_rows.empty:
             st.markdown(f"### Grand Weighted Average Days Late: **{grand_weighted}**")
             st.markdown("#### Quarterly Weighted Average Days Late (Fiscal Quarters, by Invoice Date):")
-            for q in sorted(qtr_to_avg.keys()):
+            for q in qtr_to_avg.keys():
                 st.markdown(f"- **{q}**: {qtr_to_avg[q]}")
             # Display grouped DataFrame table
-            for q in sorted(df_rows['Sale_Quarter'].unique()):
-                st.markdown(f"### {q}: Weighted Average Days Late = {qtr_to_avg.get(q, '')}")
-                q_rows = df_rows[df_rows['Sale_Quarter'] == q]
+            unique_quarters = df_rows.drop_duplicates(subset=["Quarter_Label"])[
+                ["Fiscal_Year", "Fiscal_Quarter", "Quarter_Label"]
+            ].sort_values(["Fiscal_Year", "Fiscal_Quarter"])
+            for _, quarter_row in unique_quarters.iterrows():
+                qlabel = quarter_row["Quarter_Label"]
+                st.markdown(f"### {qlabel}: Weighted Average Days Late = {qtr_to_avg.get(qlabel, '')}")
+                q_rows = df_rows[df_rows['Quarter_Label'] == qlabel]
                 st.dataframe(q_rows[
                     ["Sale_Date", "Invoice_No", "Sale_Amount", "Weighted_Days_Late", "Amount_Remaining"]
                 ])
@@ -291,10 +310,8 @@ if uploaded_file:
             fig, ax = plt.subplots(figsize=(10, 4))
             ax.plot(df_rows["Sale_Date_dt"], df_rows["Weighted_Days_Late"], marker="o", label="Weighted Days Late")
             # Overlay quarterly averages
-            for q in sorted(qtr_to_avg.keys()):
-                q_mask = df_rows['Sale_Quarter'] == q
-                if q_mask.any():
-                    ax.axhline(qtr_to_avg[q], color='orange', linestyle='--', alpha=0.3)
+            for q in qtr_to_avg.keys():
+                ax.axhline(qtr_to_avg[q], color='orange', linestyle='--', alpha=0.3)
             ax.set_xlabel("Sale Date")
             ax.set_ylabel("Days Late")
             ax.set_title("Weighted Days Late (with Quarterly Averages) Over Time")
