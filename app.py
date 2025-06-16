@@ -195,7 +195,7 @@ def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg):
     elements.append(Paragraph("Weighted Average Days & Quarterly to Pay Report", subtitle_style))
     elements.append(Paragraph(
         "All calculations are based on a 30-day payment deadline for each invoice.",
-        note_style
+        subtitle_style
     ))
     elements.append(Paragraph(f"Grand Weighted Average Days Late: <b>{grand_weighted}</b>", grand_style))
     elements.append(Spacer(1, 16))
