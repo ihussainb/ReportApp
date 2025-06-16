@@ -15,6 +15,14 @@ DATE_FMT = '%d-%b-%y'
 CREDIT_PERIOD_DAYS = 30
 EXCLUDE_TYPES = {'CREDIT NOTE - C25', 'JOURNAL - C25'}
 
+# Fiscal year quarters for India (April to March)
+FISCAL_QUARTERS = {
+    1: ("Q1", "April", "May", "June"),
+    2: ("Q2", "July", "August", "September"),
+    3: ("Q3", "October", "November", "December"),
+    4: ("Q4", "January", "February", "March"),
+}
+
 def robust_parse_dates(df, date_col="Date"):
     dt = pd.to_datetime(df[date_col], format=DATE_FMT, errors='coerce')
     mask = dt.isna()
@@ -30,8 +38,25 @@ def parse_float(s):
     except Exception:
         return 0.0
 
-def get_quarter(dt):
-    return f"{dt.year}-Q{((dt.month-1)//3)+1}"
+def get_fiscal_quarter(dt):
+    # Fiscal year in India: April-March
+    # Q1: Apr-Jun, Q2: Jul-Sep, Q3: Oct-Dec, Q4: Jan-Mar
+    month = dt.month
+    year = dt.year
+    if month >= 4 and month <= 6:
+        qtr = 1
+        fiscal_year = year
+    elif month >= 7 and month <= 9:
+        qtr = 2
+        fiscal_year = year
+    elif month >= 10 and month <= 12:
+        qtr = 3
+        fiscal_year = year
+    else: # Jan, Feb, Mar
+        qtr = 4
+        fiscal_year = year - 1  # Jan-Mar belong to previous fiscal year
+    qtr_name, m1, m2, m3 = FISCAL_QUARTERS[qtr]
+    return f"{fiscal_year} ({m1}, {m2}, {m3})"
 
 @st.cache_data(show_spinner=False)
 def analyze_ledger(df):
@@ -121,7 +146,7 @@ def analyze_ledger(df):
             total_amount += sale['amount']
 
     df_rows = pd.DataFrame(rows)
-    df_rows['Sale_Quarter'] = df_rows['Sale_Date'].apply(get_quarter)
+    df_rows['Sale_Quarter'] = df_rows['Sale_Date'].apply(get_fiscal_quarter)
     paid = df_rows[df_rows['Amount_Remaining'] < 0.01]
 
     qtr_to_avg = {}
@@ -156,7 +181,8 @@ def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg):
         fontSize=14, textColor=colors.HexColor("#003366"), leading=18,
     )
 
-    clean_filename = os.path.basename(report_title)
+    # Remove extension from file name
+    clean_filename = os.path.splitext(os.path.basename(report_title))[0]
     elements.append(Paragraph(f"{clean_filename}", title_style))
     elements.append(Paragraph("Weighted Average Days & Quarterly to Pay Report", subtitle_style))
     elements.append(Spacer(1, 10))
@@ -164,10 +190,10 @@ def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg):
     elements.append(Spacer(1, 16))
 
     # Table for quarterly averages
-    data = [["Quarter", "Weighted Avg Days Late"]]
+    data = [["Quarter (Months)", "Weighted Avg Days Late"]]
     for q in sorted(qtr_to_avg.keys()):
         data.append([q, f"{qtr_to_avg[q]:.2f}"])
-    table = Table(data, colWidths=[190, 190], hAlign='CENTER')
+    table = Table(data, colWidths=[250, 190], hAlign='CENTER')
     table.setStyle(TableStyle([
         ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
         ("FONTSIZE", (0,0), (-1,0), 13),
@@ -230,7 +256,7 @@ def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, buffer, rep
         elements.append(Spacer(1, 18))
     doc.build(elements)
 
-st.title("Ledger Weighted Average Days to Pay Report (Quarterly Grouped)")
+st.title("Ledger Weighted Average Days to Pay Report (Fiscal Year Quarterly Grouped)")
 st.markdown("""
 Upload your Tally ledger CSV file (must have columns: Date, Particulars, Vch Type, Vch No., Debit, Credit).
 """)
@@ -248,7 +274,7 @@ if uploaded_file:
         df_rows, grand_weighted, qtr_to_avg, problematic_rows = analyze_ledger(df)
         if not df_rows.empty:
             st.markdown(f"### Grand Weighted Average Days Late: **{grand_weighted}**")
-            st.markdown("#### Quarterly Weighted Average Days Late (by Invoice Date):")
+            st.markdown("#### Quarterly Weighted Average Days Late (Fiscal Quarters, by Invoice Date):")
             for q in sorted(qtr_to_avg.keys()):
                 st.markdown(f"- **{q}**: {qtr_to_avg[q]}")
             # Display grouped DataFrame table
