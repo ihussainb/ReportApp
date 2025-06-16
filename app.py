@@ -20,7 +20,7 @@ FQ_LABELS = {
     1: ("Q1", "Apr–Jun"),
     2: ("Q2", "Jul–Sep"),
     3: ("Q3", "Oct–Dec"),
-    4: ("Q4", "Jan–Mar")
+    4: ("Q4", "Jan-Mar")
 }
 
 def robust_parse_dates(df, date_col="Date"):
