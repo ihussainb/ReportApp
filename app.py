@@ -171,29 +171,31 @@ def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, 
 
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
-        'Title', parent=styles['Title'], alignment=1, fontSize=20,
-        spaceAfter=10, leading=24,
+        'FileTitle', parent=styles['Title'], alignment=1, fontSize=22, spaceAfter=8, leading=26,
     )
     subtitle_style = ParagraphStyle(
-        'Subtitle', parent=styles['Title'], alignment=1, fontSize=15,
-        spaceAfter=2, leading=18,
+        'Subtitle', parent=styles['Title'], alignment=1, fontSize=14, spaceAfter=3, leading=18,
+    )
+    subsubtitle_style = ParagraphStyle(
+        'SubSubtitle', parent=styles['Title'], alignment=1, fontSize=13, spaceAfter=10, leading=16,
     )
     grand_style = ParagraphStyle(
-        'Grand', parent=styles['Heading2'], alignment=1,
-        fontSize=14, textColor=colors.HexColor("#003366"), leading=18,
+        'Grand', parent=styles['Heading2'], alignment=1, fontSize=14, textColor=colors.HexColor("#003366"), leading=18,
     )
 
-    # Main report title
-    elements.append(Paragraph("Weighted Average Days & Quarterly to Pay Report", title_style))
-    # File name as subtitle
+    # 1. Ledger name as title (file name without extension)
     clean_filename = os.path.splitext(os.path.basename(report_title))[0]
-    elements.append(Paragraph(f"{clean_filename}", subtitle_style))
-    # Fiscal year credit period as subtitle
-    elements.append(Paragraph("By Fiscal Year — 30 Days Credit Period", subtitle_style))
-    # Grand weighted avg days late
+    elements.append(Paragraph(f"{clean_filename}", title_style))
+
+    # 2. Subtitle (report title) and subsubtitle (period note)
+    elements.append(Paragraph("Weighted Average Days & Quarterly to Pay Report", subtitle_style))
+    elements.append(Paragraph("By Fiscal Year — 30 Days Credit Period", subsubtitle_style))
+
+    # 3. Grand Weighted Avg Days Late
     elements.append(Paragraph(f"Grand Weighted Avg Days Late: <b>{grand_weighted}</b>", grand_style))
     elements.append(Spacer(1, 12))
 
+    # 4. Summary Table (unchanged)
     data = [["Quarter", "Weighted Avg Days Late", "% Paid Amount"]]
     for q in qtr_to_avg.keys():
         weight = f"{quarter_weightage.get(q, 0.0):.1f}%" if q in quarter_weightage else ""
