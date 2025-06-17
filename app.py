@@ -183,9 +183,14 @@ def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, 
         fontSize=14, textColor=colors.HexColor("#003366"), leading=18,
     )
 
+    # Main report title
+    elements.append(Paragraph("Weighted Average Days & Quarterly to Pay Report", title_style))
+    # File name as subtitle
     clean_filename = os.path.splitext(os.path.basename(report_title))[0]
-    elements.append(Paragraph(f"{clean_filename}", title_style))
+    elements.append(Paragraph(f"{clean_filename}", subtitle_style))
+    # Fiscal year credit period as subtitle
     elements.append(Paragraph("By Fiscal Year — 30 Days Credit Period", subtitle_style))
+    # Grand weighted avg days late
     elements.append(Paragraph(f"Grand Weighted Avg Days Late: <b>{grand_weighted}</b>", grand_style))
     elements.append(Spacer(1, 12))
 
