@@ -56,9 +56,6 @@ def analyze_ledger(df):
     payments = []
     problematic_rows = []
 
-    # Drop rows where 'Date' is NaN, which can happen with blank rows in Tally exports
-    df.dropna(subset=['Date'], inplace=True)
-
     df["Parsed_Date"], parse_failures = robust_parse_dates(df, "Date")
 
     for idx, row in df.iterrows():
@@ -140,9 +137,6 @@ def analyze_ledger(df):
             total_impact += total_per_invoice
             total_amount += sale['amount']
 
-    if not rows:
-        return pd.DataFrame(), 0.0, {}, pd.Series(), problematic_rows
-
     df_rows = pd.DataFrame(rows)
     # Assign concise quarter label, fiscal year and quarter number
     q_labels = df_rows['Sale_Date'].apply(lambda d: get_fiscal_quarter_label(pd.to_datetime(d)))
@@ -152,16 +146,15 @@ def analyze_ledger(df):
     # Sort by fiscal year and quarter
     paid = paid.sort_values(['Fiscal_Year', 'Fiscal_Quarter'])
     qtr_to_avg = {}
-    if not paid.empty:
-        for _, group in paid.groupby(['Fiscal_Year', 'Fiscal_Quarter', 'Quarter_Label']):
-            label = group['Quarter_Label'].iloc[0]
-            qtr_avg = np.average(group['Weighted_Days_Late'], weights=group['Sale_Amount'])
-            qtr_to_avg[label] = round(qtr_avg, 2)
+    for _, group in paid.groupby(['Fiscal_Year', 'Fiscal_Quarter', 'Quarter_Label']):
+        label = group['Quarter_Label'].iloc[0]
+        qtr_avg = np.average(group['Weighted_Days_Late'], weights=group['Sale_Amount'])
+        qtr_to_avg[label] = round(qtr_avg, 2)
 
     # Quarterly payment weightage (% of total paid in each quarter)
     quarter_amounts = paid.groupby('Quarter_Label')['Sale_Amount'].sum()
     total_paid = quarter_amounts.sum()
-    quarter_weightage = (quarter_amounts / total_paid * 100).round(1) if total_paid > 0 else pd.Series()
+    quarter_weightage = (quarter_amounts / total_paid * 100).round(1)
 
     df_rows['Sale_Date'] = df_rows['Sale_Date'].dt.strftime('%d-%b-%y')
     df_rows['Due_Date'] = df_rows['Due_Date'].dt.strftime('%d-%b-%y')
@@ -276,27 +269,19 @@ def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, quarter_wei
 st.title("Ledger Weighted Average Days to Pay Report (Fiscal Year Quarterly Grouped)")
 st.markdown("""
 Upload your Tally ledger file (CSV or Excel). It must have columns: Date, Particulars, Vch Type, Vch No., Debit, Credit.
-The app assumes the data headers are on **row 13**, typical for Tally exports.
 """)
 
 uploaded_file = st.file_uploader("Upload CSV or Excel", type=['csv', 'xlsx'])
 
 if uploaded_file:
     try:
-        # This assumes the Tally export format with 12 header rows.
-        # The 13th row (index 12) is treated as the header.
         try:
-            # Try reading as CSV, skipping the top rows
-            df = pd.read_csv(uploaded_file, header=12)
+            df = pd.read_csv(uploaded_file)
         except Exception:
-            # If CSV reading fails, try reading as Excel, skipping the top rows
-            df = pd.read_excel(uploaded_file, header=12)
-
-        # Cleanup: Tally exports can have unnamed columns at the end from merged cells. Let's drop them.
-        df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+            df = pd.read_excel(uploaded_file)
 
         if "Date" not in df.columns:
-            st.error("Date column not found! Please ensure the file is a standard Tally export with headers on row 13.")
+            st.error("Date column not found in uploaded file!")
             st.stop()
         st.success("File uploaded and read successfully.")
         st.write("Preview:", df.head())
@@ -362,7 +347,7 @@ if uploaded_file:
                 mime="application/pdf"
             )
         else:
-            st.warning("No valid sales data found to analyze.")
+            st.warning("No sales found in this data.")
         if len(problematic_rows) > 0:
             st.markdown("#### ⚠️ The following rows have problematic or missing dates and were skipped:")
             st.dataframe(pd.DataFrame(problematic_rows))
