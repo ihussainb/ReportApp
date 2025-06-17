@@ -178,9 +178,6 @@ def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, 
         'Subtitle', parent=styles['Title'], alignment=1, fontSize=15,
         spaceAfter=2, leading=18,
     )
-    note_style = ParagraphStyle(
-        'Note', alignment=1, fontSize=12, textColor=colors.HexColor("#666666"), spaceAfter=8
-    )
     grand_style = ParagraphStyle(
         'Grand', parent=styles['Heading2'], alignment=1,
         fontSize=14, textColor=colors.HexColor("#003366"), leading=18,
@@ -301,18 +298,21 @@ if uploaded_file:
                 st.dataframe(q_rows[
                     ["Sale_Date", "Invoice_No", "Sale_Amount", "Weighted_Days_Late", "Amount_Remaining"]
                 ])
-            # Chart
+            # Chart: Only plot actual data, no quarter averages or extra legend items!
             df_rows["Sale_Date_dt"] = pd.to_datetime(df_rows["Sale_Date"], format="%d-%b-%y", errors="coerce")
             df_rows = df_rows.dropna(subset=["Sale_Date_dt"])
             df_rows = df_rows.sort_values("Sale_Date_dt")
             fig, ax = plt.subplots(figsize=(10, 4))
-            ax.plot(df_rows["Sale_Date_dt"], df_rows["Weighted_Days_Late"], marker="o", label="Weighted Days Late")
-            for q in qtr_to_avg.keys():
-                ax.axhline(qtr_to_avg[q], color='orange', linestyle='--', alpha=0.3, label=f"{q} Avg")
+            ax.plot(
+                df_rows["Sale_Date_dt"],
+                df_rows["Weighted_Days_Late"],
+                marker="o",
+                label="Weighted Days Late"
+            )
             ax.set_xlabel("Sale Date")
             ax.set_ylabel("Days Late")
-            ax.set_title("Weighted Days Late (with Quarterly Averages) Over Time")
-            ax.legend()
+            ax.set_title("Weighted Days Late Over Time")
+            ax.legend(["Weighted Days Late"])
             plt.grid(True)
             st.pyplot(fig, use_container_width=True)
             chart_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
