@@ -37,25 +37,24 @@ def parse_float(s):
     except Exception:
         return 0.0
 
-def get_fiscal_quarter_info(dt):
+def get_fiscal_quarter_label(dt):
     month = dt.month
     year = dt.year
     if month >= 4 and month <= 6:
         quarter = 1
-        fiscal_year = year
+        months = "Apr–Jun"
     elif month >= 7 and month <= 9:
         quarter = 2
-        fiscal_year = year
+        months = "Jul–Sep"
     elif month >= 10 and month <= 12:
         quarter = 3
-        fiscal_year = year
+        months = "Oct–Dec"
     else:  # Jan-Mar
         quarter = 4
-        fiscal_year = year - 1
-    qtr_code, qtr_months = FQ_LABELS[quarter]
-    label = f"FY{fiscal_year} {qtr_code} ({qtr_months})"
-    return fiscal_year, quarter, label
-
+        year = year - 1
+        months = "Jan–Mar"
+    return f"{year} Q{quarter} {months}"
+    
 @st.cache_data(show_spinner=False)
 def analyze_ledger(df):
     sales = []
