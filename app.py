@@ -268,16 +268,20 @@ def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, quarter_wei
 
 st.title("Ledger Weighted Average Days to Pay Report (Fiscal Year Quarterly Grouped)")
 st.markdown("""
-Upload your Tally ledger CSV file (must have columns: Date, Particulars, Vch Type, Vch No., Debit, Credit).
+Upload your Tally ledger file (CSV or Excel). It must have columns: Date, Particulars, Vch Type, Vch No., Debit, Credit.
 """)
 
-uploaded_file = st.file_uploader("Upload CSV", type="csv")
+uploaded_file = st.file_uploader("Upload CSV or Excel", type=['csv', 'xlsx'])
 
 if uploaded_file:
     try:
-        df = pd.read_csv(uploaded_file)
+        try:
+            df = pd.read_csv(uploaded_file)
+        except Exception:
+            df = pd.read_excel(uploaded_file)
+
         if "Date" not in df.columns:
-            st.error("Date column not found in uploaded CSV!")
+            st.error("Date column not found in uploaded file!")
             st.stop()
         st.success("File uploaded and read successfully.")
         st.write("Preview:", df.head())
@@ -350,4 +354,4 @@ if uploaded_file:
     except Exception as e:
         st.error(f"Error processing file: {e}")
 else:
-    st.info("Awaiting CSV file upload.")
+    st.info("Awaiting CSV or Excel file upload.")
