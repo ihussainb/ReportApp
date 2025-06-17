@@ -199,7 +199,7 @@ def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, 
     data = [["Quarter", "Weighted Avg Days Late", "% Paid Amount"]]
     for q in qtr_to_avg.keys():
         weight = f"{quarter_weightage.get(q, 0.0):.1f}%" if q in quarter_weightage else ""
-        data.append([q, f"{qtr_to_avg[q]:.2f}", weight])
+        data.append([q, f"{qtr_to_avg[q]:.1f}", weight])
     table = Table(data, colWidths=[220, 170, 110], hAlign='CENTER')
     table.setStyle(TableStyle([
         ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
@@ -247,7 +247,7 @@ def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, quarter_wei
                 row["Sale_Date"],
                 row["Invoice_No"],
                 f"{row['Sale_Amount']:,.2f}",
-                f"{row['Weighted_Days_Late']:.2f}",
+                f"{row['Weighted_Days_Late']:.1f}",
                 f"{row['Amount_Remaining']:,.2f}",
             ])
         t = Table(data, colWidths=[90, 140, 100, 120, 120])
