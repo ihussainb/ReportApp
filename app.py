@@ -195,11 +195,11 @@ def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, 
     elements.append(Paragraph(f"Grand Weighted Avg Days Late: <b>{grand_weighted}</b>", grand_style))
     elements.append(Spacer(1, 12))
 
-    # 4. Summary Table (unchanged)
+    # 4. Summary Table
     data = [["Quarter", "Weighted Avg Days Late", "% Paid Amount"]]
     for q in qtr_to_avg.keys():
-    weight = f"{quarter_weightage.get(q, 0.0):.1f}%" if q in quarter_weightage else ""
-    data.append([q, f"{qtr_to_avg[q]:.1f}", weight])
+        weight = f"{quarter_weightage.get(q, 0.0):.1f}%" if q in quarter_weightage else ""
+        data.append([q, f"{qtr_to_avg[q]:.1f}", weight])
     table = Table(data, colWidths=[220, 170, 110], hAlign='CENTER')
     table.setStyle(TableStyle([
         ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
@@ -288,7 +288,7 @@ if uploaded_file:
             summary_df = pd.DataFrame([
                 {
                     "Quarter": q,
-                    "Weighted Avg Days Late": qtr_to_avg[q],
+                    "Weighted Avg Days Late": f"{qtr_to_avg[q]:.1f}",
                     "% Paid Amount": f"{quarter_weightage.get(q, 0.0):.1f}%"
                 }
                 for q in qtr_to_avg.keys()
