@@ -15,12 +15,7 @@ DATE_FMT = '%d-%b-%y'
 CREDIT_PERIOD_DAYS = 30
 EXCLUDE_TYPES = {'CREDIT NOTE - C25', 'JOURNAL - C25'}
 
-FQ_LABELS = {
-    1: ("Q1", "Apr–Jun"),
-    2: ("Q2", "Jul–Sep"),
-    3: ("Q3", "Oct–Dec"),
-    4: ("Q4", "Jan–Mar")
-}
+QUARTER_MONTHS = {1: "Apr–Jun", 2: "Jul–Sep", 3: "Oct–Dec", 4: "Jan–Mar"}
 
 def robust_parse_dates(df, date_col="Date"):
     dt = pd.to_datetime(df[date_col], format=DATE_FMT, errors='coerce')
@@ -42,19 +37,19 @@ def get_fiscal_quarter_label(dt):
     year = dt.year
     if month >= 4 and month <= 6:
         quarter = 1
-        months = "Apr–Jun"
+        months = QUARTER_MONTHS[quarter]
     elif month >= 7 and month <= 9:
         quarter = 2
-        months = "Jul–Sep"
+        months = QUARTER_MONTHS[quarter]
     elif month >= 10 and month <= 12:
         quarter = 3
-        months = "Oct–Dec"
+        months = QUARTER_MONTHS[quarter]
     else:  # Jan-Mar
         quarter = 4
-        year = year - 1
-        months = "Jan–Mar"
-    return f"{year} Q{quarter} {months}"
-    
+        year -= 1  # assign to previous FY
+        months = QUARTER_MONTHS[quarter]
+    return f"{year} Q{quarter} {months}", year, quarter
+
 @st.cache_data(show_spinner=False)
 def analyze_ledger(df):
     sales = []
@@ -143,8 +138,9 @@ def analyze_ledger(df):
             total_amount += sale['amount']
 
     df_rows = pd.DataFrame(rows)
-    fiscal_info = df_rows['Sale_Date'].apply(lambda d: get_fiscal_quarter_info(pd.to_datetime(d)))
-    df_rows[['Fiscal_Year', 'Fiscal_Quarter', 'Quarter_Label']] = pd.DataFrame(list(fiscal_info))
+    # Assign concise quarter label, fiscal year and quarter number
+    q_labels = df_rows['Sale_Date'].apply(lambda d: get_fiscal_quarter_label(pd.to_datetime(d)))
+    df_rows[['Quarter_Label', 'Fiscal_Year', 'Fiscal_Quarter']] = pd.DataFrame(q_labels.tolist(), index=df_rows.index)
     paid = df_rows[df_rows['Amount_Remaining'] < 0.01]
 
     # Sort by fiscal year and quarter
@@ -179,31 +175,28 @@ def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, 
         spaceAfter=10, leading=24,
     )
     subtitle_style = ParagraphStyle(
-        'Subtitle', parent=styles['Title'], alignment=1, fontSize=16,
-        spaceAfter=3, leading=20,
+        'Subtitle', parent=styles['Title'], alignment=1, fontSize=15,
+        spaceAfter=2, leading=18,
     )
     note_style = ParagraphStyle(
-        'Note', alignment=1, fontSize=10, textColor=colors.HexColor("#666666"), spaceAfter=8
+        'Note', alignment=1, fontSize=12, textColor=colors.HexColor("#666666"), spaceAfter=8
     )
     grand_style = ParagraphStyle(
         'Grand', parent=styles['Heading2'], alignment=1,
         fontSize=14, textColor=colors.HexColor("#003366"), leading=18,
     )
 
-    # Remove extension from file name
     clean_filename = os.path.splitext(os.path.basename(report_title))[0]
     elements.append(Paragraph(f"{clean_filename}", title_style))
-    elements.append(Paragraph("Weighted Average Days & Quarterly to Pay Report", subtitle_style))
-    elements.append(Paragraph("30 days credit period", note_style))
+    elements.append(Paragraph("By Fiscal Year — 30 Days Credit Period", subtitle_style))
     elements.append(Paragraph(f"Grand Weighted Avg Days Late: <b>{grand_weighted}</b>", grand_style))
-    elements.append(Spacer(1, 16))
+    elements.append(Spacer(1, 12))
 
-    # Table for quarterly summary
     data = [["Quarter", "Weighted Avg Days Late", "% Paid Amount"]]
     for q in qtr_to_avg.keys():
         weight = f"{quarter_weightage.get(q, 0.0):.1f}%" if q in quarter_weightage else ""
-        data.append([q.replace(" (", "\n("), f"{qtr_to_avg[q]:.2f}", weight])
-    table = Table(data, colWidths=[210, 170, 120], hAlign='CENTER')
+        data.append([q, f"{qtr_to_avg[q]:.2f}", weight])
+    table = Table(data, colWidths=[220, 170, 110], hAlign='CENTER')
     table.setStyle(TableStyle([
         ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
         ("FONTSIZE", (0,0), (-1,0), 13),
@@ -243,7 +236,7 @@ def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, quarter_wei
     for _, quarter_row in unique_quarters.iterrows():
         qlabel = quarter_row["Quarter_Label"]
         q_rows = df_rows[df_rows["Quarter_Label"] == qlabel]
-        elements.append(Paragraph(f"{qlabel}: Weighted Average Days Late = {qtr_to_avg.get(qlabel, '')}", styleQ))
+        elements.append(Paragraph(f"{qlabel}: Weighted Avg Days Late = {qtr_to_avg.get(qlabel, '')}", styleQ))
         data = [table_header]
         for _, row in q_rows.iterrows():
             data.append([
@@ -287,7 +280,7 @@ if uploaded_file:
         df_rows, grand_weighted, qtr_to_avg, quarter_weightage, problematic_rows = analyze_ledger(df)
         if not df_rows.empty:
             st.markdown(f"### Grand Weighted Avg Days Late: **{grand_weighted}**")
-            st.markdown("#### Quarterly Weighted Avg Days Late & % Paid Amount (Fiscal Quarters, by Invoice Date):")
+            st.markdown("#### By Fiscal Year — 30 Days Credit Period")
             summary_df = pd.DataFrame([
                 {
                     "Quarter": q,
