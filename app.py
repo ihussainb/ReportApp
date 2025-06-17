@@ -197,7 +197,7 @@ def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, 
 
     # 4. Summary Table (unchanged)
    data = [["Quarter", "Weighted Avg Days Late", "% Paid Amount"]]
-for q in qtr_to_avg.keys():
+    for q in qtr_to_avg.keys():
     weight = f"{quarter_weightage.get(q, 0.0):.1f}%" if q in quarter_weightage else ""
     data.append([q, f"{qtr_to_avg[q]:.1f}", weight])
     table = Table(data, colWidths=[220, 170, 110], hAlign='CENTER')
