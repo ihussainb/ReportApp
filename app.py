@@ -13,10 +13,7 @@ import matplotlib.pyplot as plt
 
 DATE_FMT = '%d-%b-%y'
 CREDIT_PERIOD_DAYS = 30
-# Rearranging these columns 
 EXCLUDE_TYPES = {'JOURNAL - C25'}
-
-
 QUARTER_MONTHS = {1: "Apr–Jun", 2: "Jul–Sep", 3: "Oct–Dec", 4: "Jan–Mar"}
 
 def robust_parse_dates(df, date_col="Date"):
@@ -37,18 +34,18 @@ def parse_float(s):
 def get_fiscal_quarter_label(dt):
     month = dt.month
     year = dt.year
-    if month >= 4 and month <= 6:
+    if 4 <= month <= 6:
         quarter = 1
         months = QUARTER_MONTHS[quarter]
-    elif month >= 7 and month <= 9:
+    elif 7 <= month <= 9:
         quarter = 2
         months = QUARTER_MONTHS[quarter]
-    elif month >= 10 and month <= 12:
+    elif 10 <= month <= 12:
         quarter = 3
         months = QUARTER_MONTHS[quarter]
     else:  # Jan-Mar
         quarter = 4
-        year -= 1  # assign to previous FY
+        year -= 1
         months = QUARTER_MONTHS[quarter]
     return f"{year} Q{quarter} {months}", year, quarter
 
@@ -159,20 +156,17 @@ def analyze_ledger(df):
             total_amount += sale['amount']
 
     df_rows = pd.DataFrame(rows)
-    # Assign concise quarter label, fiscal year and quarter number
     q_labels = df_rows['Sale_Date'].apply(lambda d: get_fiscal_quarter_label(pd.to_datetime(d)))
     df_rows[['Quarter_Label', 'Fiscal_Year', 'Fiscal_Quarter']] = pd.DataFrame(q_labels.tolist(), index=df_rows.index)
     paid = df_rows[df_rows['Amount_Remaining'] < 0.01]
-
-    # Sort by fiscal year and quarter
     paid = paid.sort_values(['Fiscal_Year', 'Fiscal_Quarter'])
+
     qtr_to_avg = {}
     for _, group in paid.groupby(['Fiscal_Year', 'Fiscal_Quarter', 'Quarter_Label']):
         label = group['Quarter_Label'].iloc[0]
         qtr_avg = np.average(group['Weighted_Days_Late'], weights=group['Sale_Amount'])
         qtr_to_avg[label] = round(qtr_avg, 2)
 
-    # Quarterly payment weightage (% of total paid in each quarter)
     quarter_amounts = paid.groupby('Quarter_Label')['Sale_Amount'].sum()
     total_paid = quarter_amounts.sum()
     quarter_weightage = (quarter_amounts / total_paid * 100).round(1)
@@ -185,11 +179,6 @@ def analyze_ledger(df):
     return df_rows, grand_weighted, qtr_to_avg, quarter_weightage, problematic_rows
 
 def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, quarter_weightage):
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
-    from reportlab.lib import colors
-    import os
-
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
         'FileTitle', parent=styles['Title'], alignment=1, fontSize=22, spaceAfter=8, leading=26,
@@ -204,19 +193,13 @@ def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, 
         'Grand', parent=styles['Heading2'], alignment=1, fontSize=14, textColor=colors.HexColor("#003366"), leading=18,
     )
 
-    # 1. Ledger name as title (file name without extension)
     clean_filename = os.path.splitext(os.path.basename(report_title))[0]
     elements.append(Paragraph(f"{clean_filename}", title_style))
-
-    # 2. Subtitle (report title) and subsubtitle (period note)
     elements.append(Paragraph("Weighted Average Days & Quarterly to Pay Report", subtitle_style))
     elements.append(Paragraph("By Fiscal Year — 30 Days Credit Period", subsubtitle_style))
-
-    # 3. Grand Weighted Avg Days Late
     elements.append(Paragraph(f"Grand Weighted Avg Days Late: <b>{grand_weighted}</b>", grand_style))
     elements.append(Spacer(1, 12))
 
-    # 4. Summary Table
     data = [["Quarter", "Weighted Avg Days Late", "% Paid Amount"]]
     for q in qtr_to_avg.keys():
         weight = f"{quarter_weightage.get(q, 0.0):.1f}%" if q in quarter_weightage else ""
@@ -295,6 +278,7 @@ Upload your Tally ledger file (CSV or Excel). It must have columns: Date, Partic
 uploaded_file = st.file_uploader("Upload CSV or Excel", type=['csv', 'xlsx'])
 
 if uploaded_file:
+    st.cache_data.clear()  # Clear cache if new file uploaded, avoids stale results
     try:
         try:
             df = pd.read_csv(uploaded_file)
@@ -319,7 +303,6 @@ if uploaded_file:
                 for q in qtr_to_avg.keys()
             ])
             st.dataframe(summary_df)
-            # Display grouped DataFrame table
             unique_quarters = df_rows.drop_duplicates(subset=["Quarter_Label"])[
                 ["Fiscal_Year", "Fiscal_Quarter", "Quarter_Label"]
             ].sort_values(["Fiscal_Year", "Fiscal_Quarter"])
@@ -330,7 +313,6 @@ if uploaded_file:
                 st.dataframe(q_rows[
                     ["Sale_Date", "Invoice_No", "Sale_Amount", "Weighted_Days_Late", "Amount_Remaining"]
                 ])
-            # Chart: Only plot actual data, no quarter averages or extra legend items!
             df_rows["Sale_Date_dt"] = pd.to_datetime(df_rows["Sale_Date"], format="%d-%b-%y", errors="coerce")
             df_rows = df_rows.dropna(subset=["Sale_Date_dt"])
             df_rows = df_rows.sort_values("Sale_Date_dt")
