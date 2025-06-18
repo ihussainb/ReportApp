@@ -13,7 +13,9 @@ import matplotlib.pyplot as plt
 
 DATE_FMT = '%d-%b-%y'
 CREDIT_PERIOD_DAYS = 30
+# Rearranging these columns 
 EXCLUDE_TYPES = {'CREDIT NOTE - C25', 'JOURNAL - C25'}
+
 
 QUARTER_MONTHS = {1: "Apr–Jun", 2: "Jul–Sep", 3: "Oct–Dec", 4: "Jan–Mar"}
 
@@ -81,6 +83,17 @@ def analyze_ledger(df):
                 'remaining': debit,
                 'payments': []
             })
+        elif 'CREDIT NOTE' in vch_type:
+            cn_amt = credit if credit > 0 else debit  # Sometimes credit notes use Debit
+            if cn_amt > 0:
+                payments.append({
+                'date': parsed_date,
+                'amount': cn_amt,
+                'is_credit_note': True,
+                'vch_no': vch_no,
+                'particulars': particulars
+            })
+        
         elif debit > 0:
             sales.append({
                 'date': parsed_date,
