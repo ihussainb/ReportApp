@@ -13,7 +13,8 @@ import matplotlib.pyplot as plt
 
 DATE_FMT = '%d-%b-%y'
 CREDIT_PERIOD_DAYS = 30
-EXCLUDE_TYPES = {'JOURNAL - C25'}
+# No AR-impacting types should go here; leave empty or only add those with zero AR impact
+EXCLUDE_TYPES = set()
 QUARTER_MONTHS = {1: "Apr–Jun", 2: "Jul–Sep", 3: "Oct–Dec", 4: "Jan–Mar"}
 
 def robust_parse_dates(df, date_col="Date"):
@@ -57,11 +58,10 @@ def analyze_ledger(df):
 
     df["Parsed_Date"], parse_failures = robust_parse_dates(df, "Date")
 
-    # 1. Build sales and payments lists (one pass)
     for idx, row in df.iterrows():
         vch_type = str(row.get('Vch Type', '')).strip().upper()
-        if vch_type in EXCLUDE_TYPES:
-            continue 
+        if vch_type in {t.upper() for t in EXCLUDE_TYPES}:
+            continue
 
         parsed_date = row.get("Parsed_Date")
         if pd.isna(parsed_date):
@@ -73,6 +73,7 @@ def analyze_ledger(df):
         debit = parse_float(row.get('Debit', ''))
         credit = parse_float(row.get('Credit', ''))
 
+        # Opening balance as a sale
         if particulars.lower() == "opening balance":
             sales.append({
                 'date': parsed_date,
@@ -82,6 +83,7 @@ def analyze_ledger(df):
                 'remaining': debit,
                 'payments': []
             })
+        # Credit notes reduce AR
         elif 'CREDIT NOTE' in vch_type:
             cn_amt = credit if credit > 0 else debit
             if cn_amt > 0:
@@ -93,6 +95,7 @@ def analyze_ledger(df):
                     'vch_no': vch_no,
                     'particulars': particulars
                 })
+        # Tax credits/Journals (TDS/GST etc) reduce AR
         elif any(keyword in particulars.upper() for keyword in ['TDS', 'GST', 'TAX CREDIT']):
             if credit > 0:
                 payments.append({
@@ -103,6 +106,7 @@ def analyze_ledger(df):
                     'vch_no': vch_no,
                     'particulars': particulars
                 })
+        # Regular sale
         elif debit > 0:
             sales.append({
                 'date': parsed_date,
@@ -112,6 +116,7 @@ def analyze_ledger(df):
                 'remaining': debit,
                 'payments': []
             })
+        # Regular payment/receipt
         elif credit > 0:
             payments.append({
                 'date': parsed_date,
@@ -122,7 +127,7 @@ def analyze_ledger(df):
                 'particulars': particulars
             })
 
-    # 2. Allocate payments (FIFO) after collecting all data
+    # Allocate payments FIFO
     sale_idx = 0
     for payment in payments:
         amt_left = payment['amount']
@@ -171,8 +176,7 @@ def analyze_ledger(df):
     df_rows = pd.DataFrame(rows)
     q_labels = df_rows['Sale_Date'].apply(lambda d: get_fiscal_quarter_label(pd.to_datetime(d)))
     df_rows[['Quarter_Label', 'Fiscal_Year', 'Fiscal_Quarter']] = pd.DataFrame(q_labels.tolist(), index=df_rows.index)
-    paid = df_rows[df_rows['Amount_Remaining'] < 0.01]
-    paid = paid.sort_values(['Fiscal_Year', 'Fiscal_Quarter'])
+    paid = df_rows[df_rows['Amount_Remaining'] < 0.01].sort_values(['Fiscal_Year', 'Fiscal_Quarter'])
 
     qtr_to_avg = {}
     for _, group in paid.groupby(['Fiscal_Year', 'Fiscal_Quarter', 'Quarter_Label']):
