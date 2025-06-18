@@ -188,11 +188,7 @@ def analyze_ledger(df):
         qtr_avg = np.average(group['Weighted_Days_Late'], weights=group['Sale_Amount'])
         qtr_to_avg[label] = round(qtr_avg, 2)
 
-    quarter_amounts = paid.groupby('Quarter_Label')['Sale_Amount'].sum()
-    total_paid = quarter_amounts.sum()
-    quarter_weightage = (quarter_amounts / total_paid * 100).round(1) if total_paid else pd.Series(dtype=float)
-
-    # New: Total Sales and Invoice Count per quarter (from ALL rows, not just paid)
+    # Only for paid, but if you want all sales for a qtr: use df_rows
     qtr_sales_amount = df_rows.groupby('Quarter_Label')['Sale_Amount'].sum().apply(format_amount_short)
     qtr_invoice_count = df_rows.groupby('Quarter_Label')['Invoice_No'].count()
 
@@ -201,10 +197,9 @@ def analyze_ledger(df):
 
     grand_weighted = round(total_impact / total_amount, 2) if total_amount else 0.0
 
-    # Pass these new dicts to report
-    return df_rows, grand_weighted, qtr_to_avg, quarter_weightage, problematic_rows, qtr_sales_amount, qtr_invoice_count
+    return df_rows, grand_weighted, qtr_to_avg, qtr_sales_amount, qtr_invoice_count, paid, problematic_rows
 
-def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, quarter_weightage, qtr_sales_amount, qtr_invoice_count):
+def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, qtr_sales_amount, qtr_invoice_count):
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
         'FileTitle', parent=styles['Title'], alignment=1, fontSize=22, spaceAfter=8, leading=26,
@@ -221,19 +216,18 @@ def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, 
 
     clean_filename = os.path.splitext(os.path.basename(report_title))[0]
     elements.append(Paragraph(f"{clean_filename}", title_style))
-    elements.append(Paragraph("Weighted Average Days & Quarterly to Pay Report", subtitle_style))
+    elements.append(Paragraph("Weighted Avg Days Late & Quarterly Sales Report", subtitle_style))
     elements.append(Paragraph("By Fiscal Year — 30 Days Credit Period", subsubtitle_style))
     elements.append(Paragraph(f"Grand Weighted Avg Days Late: <b>{grand_weighted}</b>", grand_style))
     elements.append(Spacer(1, 12))
 
-    # Table columns: Qtr, WtdDaysLate, %Paid, Sales, #Inv
-    data = [["Qtr", "WtdDaysLate", "%Paid", "Sales", "#Inv"]]
+    # Table columns: Quarter, Wtd Avg Days Late, Total Sales, Invoices
+    data = [["Quarter", "Wtd Avg Days Late", "TotalSales", "Invoices"]]
     for q in qtr_to_avg.keys():
-        weight = f"{quarter_weightage.get(q, 0.0):.1f}%" if q in quarter_weightage else ""
         sales_amt = qtr_sales_amount.get(q, "")
         inv_count = qtr_invoice_count.get(q, "")
-        data.append([q, f"{qtr_to_avg[q]:.1f}", weight, sales_amt, inv_count])
-    table = Table(data, colWidths=[150, 110, 85, 95, 65], hAlign='CENTER')
+        data.append([q, f"{qtr_to_avg[q]:.1f}", sales_amt, inv_count])
+    table = Table(data, colWidths=[170, 140, 90, 80], hAlign='CENTER')
     table.setStyle(TableStyle([
         ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
         ("FONTSIZE", (0,0), (-1,0), 13),
@@ -249,7 +243,7 @@ def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, 
     elements.append(table)
     elements.append(Spacer(1, 18))
 
-def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, quarter_weightage, buffer, report_title, chart_path=None, qtr_sales_amount=None, qtr_invoice_count=None):
+def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, qtr_sales_amount, qtr_invoice_count, buffer, report_title, chart_path=None):
     doc = SimpleDocTemplate(
         buffer,
         pagesize=landscape(LETTER),
@@ -257,7 +251,7 @@ def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, quarter_wei
         topMargin=30, bottomMargin=30,
     )
     elements = []
-    add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, quarter_weightage, qtr_sales_amount, qtr_invoice_count)
+    add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, qtr_sales_amount, qtr_invoice_count)
     if chart_path:
         elements.append(Image(chart_path, width=500, height=250))
         elements.append(Spacer(1, 18))
@@ -299,7 +293,7 @@ def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, quarter_wei
         elements.append(Spacer(1, 18))
     doc.build(elements)
 
-st.title("Ledger Weighted Average Days to Pay Report (Fiscal Year Quarterly Grouped)")
+st.title("Ledger Weighted Avg Days Late & Quarterly Sales Report (Fiscal Year Quarterly Grouped)")
 st.markdown("""
 Upload your Tally ledger file (CSV or Excel). It must have columns: Date, Particulars, Vch Type, Vch No., Debit, Credit.
 """)
@@ -307,7 +301,7 @@ Upload your Tally ledger file (CSV or Excel). It must have columns: Date, Partic
 uploaded_file = st.file_uploader("Upload CSV or Excel", type=['csv', 'xlsx'])
 
 if uploaded_file:
-    st.cache_data.clear()  # Clear cache if new file uploaded, avoids stale results
+    st.cache_data.clear()
     try:
         try:
             df = pd.read_csv(uploaded_file)
@@ -319,17 +313,16 @@ if uploaded_file:
             st.stop()
         st.success("File uploaded and read successfully.")
         st.write("Preview:", df.head())
-        df_rows, grand_weighted, qtr_to_avg, quarter_weightage, problematic_rows, qtr_sales_amount, qtr_invoice_count = analyze_ledger(df)
+        df_rows, grand_weighted, qtr_to_avg, qtr_sales_amount, qtr_invoice_count, paid, problematic_rows = analyze_ledger(df)
         if not df_rows.empty:
             st.markdown(f"### Grand Weighted Avg Days Late: **{grand_weighted}**")
             st.markdown("#### By Fiscal Year — 30 Days Credit Period")
             summary_df = pd.DataFrame([
                 {
-                    "Qtr": q,
-                    "WtdDaysLate": f"{qtr_to_avg[q]:.1f}",
-                    "%Paid": f"{quarter_weightage.get(q, 0.0):.1f}%",
-                    "Sales": qtr_sales_amount.get(q, ""),
-                    "#Inv": qtr_invoice_count.get(q, "")
+                    "Quarter": q,
+                    "Wtd Avg Days Late": f"{qtr_to_avg[q]:.1f}",
+                    "TotalSales": qtr_sales_amount.get(q, ""),
+                    "Invoices": qtr_invoice_count.get(q, "")
                 }
                 for q in qtr_to_avg.keys()
             ])
@@ -368,12 +361,11 @@ if uploaded_file:
                 df_rows,
                 grand_weighted,
                 qtr_to_avg,
-                quarter_weightage,
+                qtr_sales_amount,
+                qtr_invoice_count,
                 pdf_buffer,
                 uploaded_file.name,
                 chart_path=chart_temp.name,
-                qtr_sales_amount=qtr_sales_amount,
-                qtr_invoice_count=qtr_invoice_count
             )
             pdf_buffer.seek(0)
             st.download_button(
