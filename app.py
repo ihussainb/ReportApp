@@ -61,7 +61,7 @@ def analyze_ledger(df):
     for idx, row in df.iterrows():
         vch_type = str(row.get('Vch Type', '')).strip().upper()
         if vch_type in EXCLUDE_TYPES:
-        continue
+    continue
 
     parsed_date = row.get("Parsed_Date")
     if pd.isna(parsed_date):
