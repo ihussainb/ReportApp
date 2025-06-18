@@ -59,56 +59,53 @@ def analyze_ledger(df):
 
     # 1. Build sales and payments lists (one pass)
     for idx, row in df.iterrows():
-        vch_type = str(row.get('Vch Type', '')).strip().upper()
-        if vch_type in EXCLUDE_TYPES:
-            continue  # Skip excluded types
+    vch_type = str(row.get('Vch Type', '')).strip().upper()
+    if vch_type in EXCLUDE_TYPES:
+        continue
 
-        parsed_date = row.get("Parsed_Date")
-        if pd.isna(parsed_date):
-            problematic_rows.append(row)
-            continue
+    parsed_date = row.get("Parsed_Date")
+    if pd.isna(parsed_date):
+        problematic_rows.append(row)
+        continue
 
-        particulars = str(row.get('Particulars', '')).strip()
-        vch_no = str(row.get('Vch No.', '')).strip()
-        debit = parse_float(row.get('Debit', ''))
-        credit = parse_float(row.get('Credit', ''))
+    particulars = str(row.get('Particulars', '')).strip()
+    vch_no = str(row.get('Vch No.', '')).strip()
+    debit = parse_float(row.get('Debit', ''))
+    credit = parse_float(row.get('Credit', ''))
 
-        if particulars.lower() == "opening balance":
-            sales.append({
-                'date': parsed_date,
-                'vch_no': 'Opening Balance',
-                'amount': debit,
-                'due_date': parsed_date + timedelta(days=CREDIT_PERIOD_DAYS),
-                'remaining': debit,
-                'payments': []
-            })
-        elif 'CREDIT NOTE' in vch_type:
-            cn_amt = credit if credit > 0 else debit
-            if cn_amt > 0:
-                payments.append({
-                    'date': parsed_date,
-                    'amount': cn_amt,
-                    'is_credit_note': True,
-                    'vch_no': vch_no,
-                    'particulars': particulars
-                })
-        elif debit > 0:
-            sales.append({
-                'date': parsed_date,
-                'vch_no': vch_no,
-                'amount': debit,
-                'due_date': parsed_date + timedelta(days=CREDIT_PERIOD_DAYS),
-                'remaining': debit,
-                'payments': []
-            })
-        elif credit > 0:
+    if particulars.lower() == "opening balance":
+        sales.append({...})
+    elif 'CREDIT NOTE' in vch_type:
+        cn_amt = credit if credit > 0 else debit
+        if cn_amt > 0:
             payments.append({
                 'date': parsed_date,
-                'amount': credit,
-                'is_credit_note': False,
+                'amount': cn_amt,
+                'is_credit_note': True,
+                'is_tax_credit': False,
                 'vch_no': vch_no,
                 'particulars': particulars
             })
+    elif any(keyword in particulars.upper() for keyword in ['TDS', 'GST', 'TAX CREDIT']):
+        payments.append({
+            'date': parsed_date,
+            'amount': credit,
+            'is_credit_note': False,
+            'is_tax_credit': True,
+            'vch_no': vch_no,
+            'particulars': particulars
+        })
+    elif debit > 0:
+        sales.append({...})
+    elif credit > 0:
+        payments.append({
+            'date': parsed_date,
+            'amount': credit,
+            'is_credit_note': False,
+            'is_tax_credit': False,
+            'vch_no': vch_no,
+            'particulars': particulars
+        })
 
     # 2. Allocate payments (FIFO) after collecting all data
     sale_idx = 0
