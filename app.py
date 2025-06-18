@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 DATE_FMT = '%d-%b-%y'
 CREDIT_PERIOD_DAYS = 30
 # Rearranging these columns 
-EXCLUDE_TYPES = {'CREDIT NOTE - C25', 'JOURNAL - C25'}
+EXCLUDE_TYPES = {'JOURNAL - C25'}
 
 
 QUARTER_MONTHS = {1: "Apr–Jun", 2: "Jul–Sep", 3: "Oct–Dec", 4: "Jan–Mar"}
