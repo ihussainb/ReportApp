@@ -58,54 +58,69 @@ def analyze_ledger(df):
     df["Parsed_Date"], parse_failures = robust_parse_dates(df, "Date")
 
     # 1. Build sales and payments lists (one pass)
-for idx, row in df.iterrows():
-    vch_type = str(row.get('Vch Type', '')).strip().upper()
-    if vch_type in EXCLUDE_TYPES:
-        continue 
+    for idx, row in df.iterrows():
+        vch_type = str(row.get('Vch Type', '')).strip().upper()
+        if vch_type in EXCLUDE_TYPES:
+            continue 
 
-    parsed_date = row.get("Parsed_Date")
-    if pd.isna(parsed_date):
-        problematic_rows.append(row)
-        continue
+        parsed_date = row.get("Parsed_Date")
+        if pd.isna(parsed_date):
+            problematic_rows.append(row)
+            continue
 
-    particulars = str(row.get('Particulars', '')).strip()
-    vch_no = str(row.get('Vch No.', '')).strip()
-    debit = parse_float(row.get('Debit', ''))
-    credit = parse_float(row.get('Credit', ''))
+        particulars = str(row.get('Particulars', '')).strip()
+        vch_no = str(row.get('Vch No.', '')).strip()
+        debit = parse_float(row.get('Debit', ''))
+        credit = parse_float(row.get('Credit', ''))
 
-    if particulars.lower() == "opening balance":
-        sales.append({...})
-    elif 'CREDIT NOTE' in vch_type:
-        cn_amt = credit if credit > 0 else debit
-        if cn_amt > 0:
+        if particulars.lower() == "opening balance":
+            sales.append({
+                'date': parsed_date,
+                'vch_no': 'Opening Balance',
+                'amount': debit,
+                'due_date': parsed_date + timedelta(days=CREDIT_PERIOD_DAYS),
+                'remaining': debit,
+                'payments': []
+            })
+        elif 'CREDIT NOTE' in vch_type:
+            cn_amt = credit if credit > 0 else debit
+            if cn_amt > 0:
+                payments.append({
+                    'date': parsed_date,
+                    'amount': cn_amt,
+                    'is_credit_note': True,
+                    'is_tax_credit': False,
+                    'vch_no': vch_no,
+                    'particulars': particulars
+                })
+        elif any(keyword in particulars.upper() for keyword in ['TDS', 'GST', 'TAX CREDIT']):
+            if credit > 0:
+                payments.append({
+                    'date': parsed_date,
+                    'amount': credit,
+                    'is_credit_note': False,
+                    'is_tax_credit': True,
+                    'vch_no': vch_no,
+                    'particulars': particulars
+                })
+        elif debit > 0:
+            sales.append({
+                'date': parsed_date,
+                'vch_no': vch_no,
+                'amount': debit,
+                'due_date': parsed_date + timedelta(days=CREDIT_PERIOD_DAYS),
+                'remaining': debit,
+                'payments': []
+            })
+        elif credit > 0:
             payments.append({
                 'date': parsed_date,
-                'amount': cn_amt,
-                'is_credit_note': True,
+                'amount': credit,
+                'is_credit_note': False,
                 'is_tax_credit': False,
                 'vch_no': vch_no,
                 'particulars': particulars
             })
-    elif any(keyword in particulars.upper() for keyword in ['TDS', 'GST', 'TAX CREDIT']):
-        payments.append({
-            'date': parsed_date,
-            'amount': credit,
-            'is_credit_note': False,
-            'is_tax_credit': True,
-            'vch_no': vch_no,
-            'particulars': particulars
-        })
-    elif debit > 0:
-        sales.append({...})
-    elif credit > 0:
-        payments.append({
-            'date': parsed_date,
-            'amount': credit,
-            'is_credit_note': False,
-            'is_tax_credit': False,
-            'vch_no': vch_no,
-            'particulars': particulars
-        })
 
     # 2. Allocate payments (FIFO) after collecting all data
     sale_idx = 0
@@ -119,6 +134,7 @@ for idx, row in df.iterrows():
                     'pay_date': payment['date'],
                     'pay_amt': to_apply,
                     'is_credit_note': payment['is_credit_note'],
+                    'is_tax_credit': payment.get('is_tax_credit', False),
                     'pay_vch_no': payment['vch_no'],
                     'pay_particulars': payment['particulars']
                 })
@@ -166,14 +182,14 @@ for idx, row in df.iterrows():
 
     quarter_amounts = paid.groupby('Quarter_Label')['Sale_Amount'].sum()
     total_paid = quarter_amounts.sum()
-    quarter_weightage = (quarter_amounts / total_paid * 100).round(1)
+    quarter_weightage = (quarter_amounts / total_paid * 100).round(1) if total_paid else pd.Series(dtype=float)
 
-    df_rows['Sale_Date'] = df_rows['Sale_Date'].dt.strftime('%d-%b-%y')
-    df_rows['Due_Date'] = df_rows['Due_Date'].dt.strftime('%d-%b-%y')
+    df_rows['Sale_Date'] = pd.to_datetime(df_rows['Sale_Date']).dt.strftime('%d-%b-%y')
+    df_rows['Due_Date'] = pd.to_datetime(df_rows['Due_Date']).dt.strftime('%d-%b-%y')
 
     grand_weighted = round(total_impact / total_amount, 2) if total_amount else 0.0
 
-return df_rows, grand_weighted, qtr_to_avg, quarter_weightage, problematic_rows
+    return df_rows, grand_weighted, qtr_to_avg, quarter_weightage, problematic_rows
 
 def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, quarter_weightage):
     styles = getSampleStyleSheet()
