@@ -173,7 +173,7 @@ for idx, row in df.iterrows():
 
     grand_weighted = round(total_impact / total_amount, 2) if total_amount else 0.0
 
-    return df_rows, grand_weighted, qtr_to_avg, quarter_weightage, problematic_rows
+        return df_rows, grand_weighted, qtr_to_avg, quarter_weightage, problematic_rows
 
 def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, quarter_weightage):
     styles = getSampleStyleSheet()
