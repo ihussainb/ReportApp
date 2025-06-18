@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 
 DATE_FMT = '%d-%b-%y'
 CREDIT_PERIOD_DAYS = 30
-# Don't exclude AR-impacting types
 EXCLUDE_TYPES = set()
 QUARTER_MONTHS = {1: "Apr–Jun", 2: "Jul–Sep", 3: "Oct–Dec", 4: "Jan–Mar"}
 
@@ -50,6 +49,15 @@ def get_fiscal_quarter_label(dt):
         months = QUARTER_MONTHS[quarter]
     return f"{year} Q{quarter} {months}", year, quarter
 
+def format_amount_short(n):
+    n = float(n)
+    if abs(n) >= 100000:
+        return f"{n/100000:.1f}L"
+    elif abs(n) >= 1000:
+        return f"{n/1000:.1f}T"
+    else:
+        return f"{n:.0f}"
+
 @st.cache_data(show_spinner=False)
 def analyze_ledger(df):
     sales = []
@@ -76,7 +84,6 @@ def analyze_ledger(df):
         debit = parse_float(row.get('Debit', ''))
         credit = parse_float(row.get('Credit', ''))
 
-        # Opening balance as a sale
         if particulars.lower() == "opening balance":
             sales.append({
                 'date': parsed_date,
@@ -86,7 +93,6 @@ def analyze_ledger(df):
                 'remaining': debit,
                 'payments': []
             })
-        # Credit notes 
         elif 'CREDIT NOTE' in vch_type:
             cn_amt = credit if credit > 0 else debit
             if cn_amt > 0:
@@ -98,7 +104,6 @@ def analyze_ledger(df):
                     'vch_no': vch_no,
                     'particulars': particulars
                 })
-        # Tax credits
         elif (any(keyword in particulars_upper for keyword in tax_keywords) or vch_type == "JOURNAL - C25") and credit > 0:
             payments.append({
                 'date': parsed_date,
@@ -108,7 +113,6 @@ def analyze_ledger(df):
                 'vch_no': vch_no,
                 'particulars': particulars
             })
-        # Regular sale
         elif debit > 0:
             sales.append({
                 'date': parsed_date,
@@ -118,7 +122,6 @@ def analyze_ledger(df):
                 'remaining': debit,
                 'payments': []
             })
-        # Regular payment/receipt
         elif credit > 0:
             payments.append({
                 'date': parsed_date,
@@ -129,7 +132,6 @@ def analyze_ledger(df):
                 'particulars': particulars
             })
 
-    # Allocate payments FIFO
     sale_idx = 0
     for payment in payments:
         amt_left = payment['amount']
@@ -190,14 +192,19 @@ def analyze_ledger(df):
     total_paid = quarter_amounts.sum()
     quarter_weightage = (quarter_amounts / total_paid * 100).round(1) if total_paid else pd.Series(dtype=float)
 
+    # New: Total Sales and Invoice Count per quarter (from ALL rows, not just paid)
+    qtr_sales_amount = df_rows.groupby('Quarter_Label')['Sale_Amount'].sum().apply(format_amount_short)
+    qtr_invoice_count = df_rows.groupby('Quarter_Label')['Invoice_No'].count()
+
     df_rows['Sale_Date'] = pd.to_datetime(df_rows['Sale_Date']).dt.strftime('%d-%b-%y')
     df_rows['Due_Date'] = pd.to_datetime(df_rows['Due_Date']).dt.strftime('%d-%b-%y')
 
     grand_weighted = round(total_impact / total_amount, 2) if total_amount else 0.0
 
-    return df_rows, grand_weighted, qtr_to_avg, quarter_weightage, problematic_rows
+    # Pass these new dicts to report
+    return df_rows, grand_weighted, qtr_to_avg, quarter_weightage, problematic_rows, qtr_sales_amount, qtr_invoice_count
 
-def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, quarter_weightage):
+def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, quarter_weightage, qtr_sales_amount, qtr_invoice_count):
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
         'FileTitle', parent=styles['Title'], alignment=1, fontSize=22, spaceAfter=8, leading=26,
@@ -219,11 +226,14 @@ def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, 
     elements.append(Paragraph(f"Grand Weighted Avg Days Late: <b>{grand_weighted}</b>", grand_style))
     elements.append(Spacer(1, 12))
 
-    data = [["Quarter", "Weighted Avg Days Late", "% Paid Amount"]]
+    # Table columns: Qtr, WtdDaysLate, %Paid, Sales, #Inv
+    data = [["Qtr", "WtdDaysLate", "%Paid", "Sales", "#Inv"]]
     for q in qtr_to_avg.keys():
         weight = f"{quarter_weightage.get(q, 0.0):.1f}%" if q in quarter_weightage else ""
-        data.append([q, f"{qtr_to_avg[q]:.1f}", weight])
-    table = Table(data, colWidths=[220, 170, 110], hAlign='CENTER')
+        sales_amt = qtr_sales_amount.get(q, "")
+        inv_count = qtr_invoice_count.get(q, "")
+        data.append([q, f"{qtr_to_avg[q]:.1f}", weight, sales_amt, inv_count])
+    table = Table(data, colWidths=[150, 110, 85, 95, 65], hAlign='CENTER')
     table.setStyle(TableStyle([
         ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
         ("FONTSIZE", (0,0), (-1,0), 13),
@@ -239,7 +249,7 @@ def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, 
     elements.append(table)
     elements.append(Spacer(1, 18))
 
-def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, quarter_weightage, buffer, report_title, chart_path=None):
+def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, quarter_weightage, buffer, report_title, chart_path=None, qtr_sales_amount=None, qtr_invoice_count=None):
     doc = SimpleDocTemplate(
         buffer,
         pagesize=landscape(LETTER),
@@ -247,7 +257,7 @@ def generate_pdf_report_grouped(df_rows, grand_weighted, qtr_to_avg, quarter_wei
         topMargin=30, bottomMargin=30,
     )
     elements = []
-    add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, quarter_weightage)
+    add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, quarter_weightage, qtr_sales_amount, qtr_invoice_count)
     if chart_path:
         elements.append(Image(chart_path, width=500, height=250))
         elements.append(Spacer(1, 18))
@@ -309,15 +319,17 @@ if uploaded_file:
             st.stop()
         st.success("File uploaded and read successfully.")
         st.write("Preview:", df.head())
-        df_rows, grand_weighted, qtr_to_avg, quarter_weightage, problematic_rows = analyze_ledger(df)
+        df_rows, grand_weighted, qtr_to_avg, quarter_weightage, problematic_rows, qtr_sales_amount, qtr_invoice_count = analyze_ledger(df)
         if not df_rows.empty:
             st.markdown(f"### Grand Weighted Avg Days Late: **{grand_weighted}**")
             st.markdown("#### By Fiscal Year — 30 Days Credit Period")
             summary_df = pd.DataFrame([
                 {
-                    "Quarter": q,
-                    "Weighted Avg Days Late": f"{qtr_to_avg[q]:.1f}",
-                    "% Paid Amount": f"{quarter_weightage.get(q, 0.0):.1f}%"
+                    "Qtr": q,
+                    "WtdDaysLate": f"{qtr_to_avg[q]:.1f}",
+                    "%Paid": f"{quarter_weightage.get(q, 0.0):.1f}%",
+                    "Sales": qtr_sales_amount.get(q, ""),
+                    "#Inv": qtr_invoice_count.get(q, "")
                 }
                 for q in qtr_to_avg.keys()
             ])
@@ -359,7 +371,9 @@ if uploaded_file:
                 quarter_weightage,
                 pdf_buffer,
                 uploaded_file.name,
-                chart_path=chart_temp.name
+                chart_path=chart_temp.name,
+                qtr_sales_amount=qtr_sales_amount,
+                qtr_invoice_count=qtr_invoice_count
             )
             pdf_buffer.seek(0)
             st.download_button(
