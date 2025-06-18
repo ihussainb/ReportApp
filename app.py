@@ -58,10 +58,10 @@ def analyze_ledger(df):
     df["Parsed_Date"], parse_failures = robust_parse_dates(df, "Date")
 
     # 1. Build sales and payments lists (one pass)
-    for idx, row in df.iterrows():
-        vch_type = str(row.get('Vch Type', '')).strip().upper()
+for idx, row in df.iterrows():
+    vch_type = str(row.get('Vch Type', '')).strip().upper()
     if vch_type in EXCLUDE_TYPES:
-        continue
+        continue 
 
     parsed_date = row.get("Parsed_Date")
     if pd.isna(parsed_date):
