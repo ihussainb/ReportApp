@@ -86,7 +86,7 @@ def analyze_ledger(df):
                 'remaining': debit,
                 'payments': []
             })
-        # Credit notes reduce AR
+        # Credit notes 
         elif 'CREDIT NOTE' in vch_type:
             cn_amt = credit if credit > 0 else debit
             if cn_amt > 0:
@@ -98,7 +98,7 @@ def analyze_ledger(df):
                     'vch_no': vch_no,
                     'particulars': particulars
                 })
-        # Tax credits/Journals (TDS, GST, Tax Payment, etc) reduce AR
+        # Tax credits
         elif (any(keyword in particulars_upper for keyword in tax_keywords) or vch_type == "JOURNAL - C25") and credit > 0:
             payments.append({
                 'date': parsed_date,
