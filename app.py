@@ -59,8 +59,8 @@ def analyze_ledger(df):
 
     # 1. Build sales and payments lists (one pass)
     for idx, row in df.iterrows():
-    vch_type = str(row.get('Vch Type', '')).strip().upper()
-    if vch_type in EXCLUDE_TYPES:
+        vch_type = str(row.get('Vch Type', '')).strip().upper()
+        if vch_type in EXCLUDE_TYPES:
         continue
 
     parsed_date = row.get("Parsed_Date")
