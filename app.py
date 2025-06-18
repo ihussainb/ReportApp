@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 
 DATE_FMT = '%d-%b-%y'
 CREDIT_PERIOD_DAYS = 30
-# No AR-impacting types should go here; leave empty or only add those with zero AR impact
+# Don't exclude AR-impacting types
 EXCLUDE_TYPES = set()
 QUARTER_MONTHS = {1: "Apr–Jun", 2: "Jul–Sep", 3: "Oct–Dec", 4: "Jan–Mar"}
 
@@ -58,6 +58,8 @@ def analyze_ledger(df):
 
     df["Parsed_Date"], parse_failures = robust_parse_dates(df, "Date")
 
+    tax_keywords = ['TDS', 'GST', 'TAX CREDIT', 'INCOME TAX', 'ADVANCE TAX', 'IT.', 'TAX']
+
     for idx, row in df.iterrows():
         vch_type = str(row.get('Vch Type', '')).strip().upper()
         if vch_type in {t.upper() for t in EXCLUDE_TYPES}:
@@ -69,6 +71,7 @@ def analyze_ledger(df):
             continue
 
         particulars = str(row.get('Particulars', '')).strip()
+        particulars_upper = particulars.upper()
         vch_no = str(row.get('Vch No.', '')).strip()
         debit = parse_float(row.get('Debit', ''))
         credit = parse_float(row.get('Credit', ''))
@@ -95,17 +98,16 @@ def analyze_ledger(df):
                     'vch_no': vch_no,
                     'particulars': particulars
                 })
-        # Tax credits/Journals (TDS/GST etc) reduce AR
-        elif any(keyword in particulars.upper() for keyword in ['TDS', 'GST', 'TAX CREDIT']):
-            if credit > 0:
-                payments.append({
-                    'date': parsed_date,
-                    'amount': credit,
-                    'is_credit_note': False,
-                    'is_tax_credit': True,
-                    'vch_no': vch_no,
-                    'particulars': particulars
-                })
+        # Tax credits/Journals (TDS, GST, Tax Payment, etc) reduce AR
+        elif (any(keyword in particulars_upper for keyword in tax_keywords) or vch_type == "JOURNAL - C25") and credit > 0:
+            payments.append({
+                'date': parsed_date,
+                'amount': credit,
+                'is_credit_note': False,
+                'is_tax_credit': True,
+                'vch_no': vch_no,
+                'particulars': particulars
+            })
         # Regular sale
         elif debit > 0:
             sales.append({
