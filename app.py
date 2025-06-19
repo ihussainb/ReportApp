@@ -51,9 +51,7 @@ def get_fiscal_quarter_label(dt):
 
 def format_amount_short(n):
     n = float(n)
-    if abs(n) >= 10000000:
-        return f"{n/10000000:.2f} Cr"
-    elif abs(n) >= 100000:
+    if abs(n) >= 100000:
         return f"{n/100000:.2f} L"
     elif abs(n) >= 1000:
         return f"{n/1000:.2f} T"
@@ -69,7 +67,9 @@ def analyze_ledger(df):
     df["Parsed_Date"], parse_failures = robust_parse_dates(df, "Date")
 
     tax_keywords = ['TDS', 'GST', 'TAX CREDIT', 'INCOME TAX', 'ADVANCE TAX', 'IT.', 'TAX']
- 
+
+    # --- TESTING CODE REMOVED ---
+
     for idx, row in df.iterrows():
         vch_type = str(row.get('Vch Type', '')).strip().upper()
         if vch_type in {t.upper() for t in EXCLUDE_TYPES}:
