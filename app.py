@@ -68,8 +68,6 @@ def analyze_ledger(df):
 
     tax_keywords = ['TDS', 'GST', 'TAX CREDIT', 'INCOME TAX', 'ADVANCE TAX', 'IT.', 'TAX']
 
-    # --- TESTING CODE REMOVED ---
-
     for idx, row in df.iterrows():
         vch_type = str(row.get('Vch Type', '')).strip().upper()
         if vch_type in {t.upper() for t in EXCLUDE_TYPES}:
