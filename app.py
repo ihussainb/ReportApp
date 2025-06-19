@@ -70,6 +70,11 @@ def analyze_ledger(df):
 
     tax_keywords = ['TDS', 'GST', 'TAX CREDIT', 'INCOME TAX', 'ADVANCE TAX', 'IT.', 'TAX']
 
+    # TESTING CHANGE: Make opening balance debit negative for testing
+    ob_idx = (df['Particulars'].str.lower() == "opening balance") & (df['Debit'].notnull())
+    if ob_idx.any():
+        df.loc[ob_idx, 'Debit'] = -abs(df.loc[ob_idx, 'Debit'].astype(float))
+
     for idx, row in df.iterrows():
         vch_type = str(row.get('Vch Type', '')).strip().upper()
         if vch_type in {t.upper() for t in EXCLUDE_TYPES}:
