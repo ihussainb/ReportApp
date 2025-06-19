@@ -51,10 +51,12 @@ def get_fiscal_quarter_label(dt):
 
 def format_amount_short(n):
     n = float(n)
-    if abs(n) >= 100000:
-        return f"{n/100000:.1f}L"
+    if abs(n) >= 10000000:
+        return f"{n/10000000:.2f} Cr"
+    elif abs(n) >= 100000:
+        return f"{n/100000:.2f} L"
     elif abs(n) >= 1000:
-        return f"{n/1000:.1f}T"
+        return f"{n/1000:.2f} T"
     else:
         return f"{n:.0f}"
 
@@ -188,7 +190,6 @@ def analyze_ledger(df):
         qtr_avg = np.average(group['Weighted_Days_Late'], weights=group['Sale_Amount'])
         qtr_to_avg[label] = round(qtr_avg, 2)
 
-    # Only for paid, but if you want all sales for a qtr: use df_rows
     qtr_sales_amount = df_rows.groupby('Quarter_Label')['Sale_Amount'].sum().apply(format_amount_short)
     qtr_invoice_count = df_rows.groupby('Quarter_Label')['Invoice_No'].count()
 
@@ -222,12 +223,12 @@ def add_first_page_elements(elements, report_title, grand_weighted, qtr_to_avg, 
     elements.append(Spacer(1, 12))
 
     # Table columns: Quarter, Wtd Avg Days Late, Total Sales, Invoices
-    data = [["Quarter", "Wtd Avg Days Late", "TotalSales", "Invoices"]]
+    data = [["Quarter", "Wtd Avg Days Late", "Total Sales", "Invoices"]]
     for q in qtr_to_avg.keys():
         sales_amt = qtr_sales_amount.get(q, "")
         inv_count = qtr_invoice_count.get(q, "")
         data.append([q, f"{qtr_to_avg[q]:.1f}", sales_amt, inv_count])
-    table = Table(data, colWidths=[170, 140, 90, 80], hAlign='CENTER')
+    table = Table(data, colWidths=[170, 150, 120, 80], hAlign='CENTER')
     table.setStyle(TableStyle([
         ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
         ("FONTSIZE", (0,0), (-1,0), 13),
@@ -321,7 +322,7 @@ if uploaded_file:
                 {
                     "Quarter": q,
                     "Wtd Avg Days Late": f"{qtr_to_avg[q]:.1f}",
-                    "TotalSales": qtr_sales_amount.get(q, ""),
+                    "Total Sales": qtr_sales_amount.get(q, ""),
                     "Invoices": qtr_invoice_count.get(q, "")
                 }
                 for q in qtr_to_avg.keys()
