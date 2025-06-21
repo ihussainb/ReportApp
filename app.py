@@ -11,9 +11,9 @@ from reportlab.lib import colors as rl_colors
 
 DATE_FMT = "%d-%b-%y"
 
-# ----------- PARSE LEDGERS -----------
+# ----------- ROBUST PARSE LEDGERS -----------
 def parse_tally_ledgers(file):
-    # Read as text with fallback encoding for Tally/Excel files
+    """Robustly parse Tally group export CSV into ledgers dict."""
     if hasattr(file, "read"):
         file.seek(0)
         try:
@@ -31,35 +31,41 @@ def parse_tally_ledgers(file):
     headers = None
     rows = []
     for i, line in enumerate(lines):
-        cells = [c.strip() for c in line.strip('\n').split(",")]
-        # Robust header detection
+        # Remove BOM and trailing newlines
+        line = line.replace("\ufeff", "").rstrip('\n\r')
+        cells = [c.strip() for c in line.split(",")]
+        # Ledger header
         if cells and cells[0].startswith("Ledger:"):
             if current_ledger and headers and rows:
                 df = pd.DataFrame(rows, columns=headers)
+                df.columns = [c.strip() for c in df.columns]
                 ledgers[current_ledger] = df
                 ledger_addresses[current_ledger] = current_address
-            current_ledger = cells[1]
+            current_ledger = cells[1] if len(cells) > 1 else "Unknown"
             current_address = None
             headers = None
             rows = []
             continue
+        # Address is right after Ledger header
         if current_ledger and current_address is None and any(cells):
             current_address = cells[0]
             continue
-        # Relaxed header detection: look for 'Date', 'Debit', 'Credit'
-        if "Date" in cells and "Debit" in cells and "Credit" in cells:
+        # Robust header detection (relaxed on blank cols/extra spaces)
+        if any("Date" in c for c in cells) and "Debit" in cells and "Credit" in cells:
             headers = [c.strip() for c in cells if c.strip()]
             rows = []
             continue
-        # Transaction row, only after header is detected
+        # Transaction row (must have header)
         if headers and (len([x for x in cells if x]) >= 5) and not (
             (cells[1] if len(cells) > 1 else "").startswith("Closing Balance")):
             if cells[0] and (cells[0][0].isdigit() or cells[0][0] == '0'):
                 while len(cells) < len(headers):
                     cells.append("")
                 rows.append([c.strip() for c in cells[:len(headers)]])
+    # Last ledger
     if current_ledger and headers and rows:
         df = pd.DataFrame(rows, columns=headers)
+        df.columns = [c.strip() for c in df.columns]
         ledgers[current_ledger] = df
         ledger_addresses[current_ledger] = current_address
     return ledgers, ledger_addresses
@@ -68,6 +74,7 @@ def parse_tally_ledgers(file):
 def classify_sales_and_payments(df, credit_days=0):
     sales = []
     payments = []
+    df.columns = [c.strip() for c in df.columns]  # ensure normalized columns
     df["Parsed_Date"] = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce")
     for _, row in df.iterrows():
         vtype = str(row.get("Vch Type", "")).upper()
@@ -275,6 +282,11 @@ credit_days = st.number_input("Credit Period (days)", min_value=0, value=0, step
 
 if uploaded:
     ledgers, ledger_addresses = parse_tally_ledgers(uploaded)
+    # DEBUG: show columns for first ledger
+    for name, df in ledgers.items():
+        st.write(f"Ledger: {name}, Columns: {list(df.columns)}")
+        st.write(df.head())
+        break
     if not ledgers:
         st.error("No ledgers found in file. Make sure this is a Group Summary CSV export from Tally.")
         st.stop()
@@ -282,7 +294,9 @@ if uploaded:
     summary_rows = []
     ledgerwise_per_invoice = {}
     for ledger_name, df in ledgers.items():
-        if df.empty or any(col not in df.columns for col in ["Date", "Particulars", "Vch Type", "Vch No.", "Debit", "Credit"]):
+        df.columns = [c.strip() for c in df.columns]
+        required_cols = {"Date", "Particulars", "Vch Type", "Vch No.", "Debit", "Credit"}
+        if df.empty or not required_cols.issubset(set(df.columns)):
             summary_rows.append({"Ledger": ledger_name, "Weighted Days Late": np.nan})
             ledgerwise_per_invoice[ledger_name] = pd.DataFrame()
             continue
