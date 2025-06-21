@@ -2,12 +2,6 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import timedelta
-from io import BytesIO
-import matplotlib.pyplot as plt
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
-from reportlab.lib.pagesizes import LETTER, landscape
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib import colors as rl_colors
 
 DATE_FMT = "%d-%b-%y"
 
@@ -73,16 +67,11 @@ def classify_sales_and_payments(df, credit_days=0):
     sales = []
     payments = []
     df.columns = [c.strip() for c in df.columns]
-    # Detect correct columns for vch type and vch no.
-    # Tally export: ['Date', 'Particulars', 'Unnamed_2', 'Vch Type', 'Vch No.', 'Debit', 'Credit']
-    # If extra unnamed columns, Vch Type is always after the last unnamed
     colnames = list(df.columns)
-    # Find indexes for key columns
     date_col = "Date"
     particulars_col = "Particulars"
     debit_col = "Debit"
     credit_col = "Credit"
-    # vch_type is always the first column after the last unnamed column
     unnamed_cols = [c for c in colnames if c.startswith("Unnamed")]
     if unnamed_cols:
         last_unnamed_idx = colnames.index(unnamed_cols[-1])
@@ -90,7 +79,6 @@ def classify_sales_and_payments(df, credit_days=0):
     else:
         vch_type_col = "Vch Type"
     vch_no_col = "Vch No."
-    # Defensive fallback
     if vch_type_col not in colnames:
         vch_type_col = "Vch Type"
     if vch_no_col not in colnames:
@@ -99,28 +87,26 @@ def classify_sales_and_payments(df, credit_days=0):
     for _, row in df.iterrows():
         vtype = str(row.get(vch_type_col, "")).upper()
         particulars = str(row.get(particulars_col, "")).upper()
-        debit = float(str(row.get(debit_col, "")).replace(",", "") or 0)
-        credit = float(str(row.get(credit_col, "")).replace(",", "") or 0)
+        sale_amt = float(str(row.get(debit_col, "")).replace(",", "") or 0)
+        pay_amt = float(str(row.get(credit_col, "")).replace(",", "") or 0)
         date = row.get("Parsed_Date")
         vch_no = str(row.get(vch_no_col, ""))
         if pd.isna(date): continue
         if "OPENING" in particulars or "CLOSING" in particulars or "JOURNAL" in vtype:
             continue
-        # SALES: look for "SALES" in vtype or particulars, and credit > 0
-        if credit > 0 and ("SALES" in vtype or "SALES" in particulars):
+        if ("SALES" in vtype or "SALES" in particulars) and sale_amt > 0:
             sales.append({
                 "date": date,
                 "vch_no": vch_no,
-                "amount": credit,
+                "amount": sale_amt,
                 "due_date": date + timedelta(days=credit_days),
-                "remaining": credit,
+                "remaining": sale_amt,
                 "payments": []
             })
-        # RECEIPT: look for "RECEIPT" in vtype or particulars, and debit > 0
-        elif debit > 0 and ("RECEIPT" in vtype or "RECEIPT" in particulars):
+        elif ("RECEIPT" in vtype or "RECEIPT" in particulars) and pay_amt > 0:
             payments.append({
                 "date": date,
-                "amount": debit,
+                "amount": pay_amt,
                 "vch_no": vch_no,
                 "particulars": particulars
             })
@@ -163,126 +149,6 @@ def weighted_days_late_calc(sales):
     wdl = round(total_impact / total_amount, 2) if total_amount else np.nan
     return wdl, pd.DataFrame(per_invoice)
 
-# ----------- PDF REPORTS -----------
-def make_quarter_table(df_per_invoice):
-    if df_per_invoice.empty:
-        return pd.DataFrame(columns=["Quarter", "Weighted Days Late"])
-    df_per_invoice = df_per_invoice.copy()
-    df_per_invoice["Quarter"] = df_per_invoice["Sale_Date"].dt.to_period("Q")
-    quarter_results = (
-        df_per_invoice.groupby("Quarter")
-        .apply(lambda x: (x["Weighted_Days_Late"] * x["Sale_Amount"]).sum() / x["Sale_Amount"].sum() if x["Sale_Amount"].sum() else 0)
-        .reset_index(name="Weighted Days Late")
-    )
-    quarter_results["Quarter"] = quarter_results["Quarter"].astype(str)
-    return quarter_results
-
-def plot_wdl_line_chart(quarter_table):
-    fig, ax = plt.subplots(figsize=(7,3))
-    ax.plot(quarter_table["Quarter"], quarter_table["Weighted Days Late"], marker="o", color="#003366")
-    ax.set_xlabel("Quarter")
-    ax.set_ylabel("Weighted Days Late")
-    ax.set_title("Weighted Days Late by Quarter")
-    ax.grid(True, axis="y", linestyle="--", alpha=0.4)
-    plt.tight_layout()
-    img_buf = BytesIO()
-    plt.savefig(img_buf, format="png")
-    plt.close(fig)
-    img_buf.seek(0)
-    return img_buf
-
-def make_summary_pdf(summary_table, credit_days):
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=landscape(LETTER), rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
-    elements = []
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle('FileTitle', parent=styles['Title'], alignment=1, fontSize=22, spaceAfter=8, leading=26)
-    subtitle_style = ParagraphStyle('Subtitle', parent=styles['Title'], alignment=1, fontSize=14, spaceAfter=3, leading=18)
-    elements.append(Paragraph("Weighted Days Late Summary Report", title_style))
-    elements.append(Paragraph(f"Credit Period: {credit_days} days", subtitle_style))
-    elements.append(Spacer(1, 18))
-    data = [["Company / Ledger", "Weighted Days Late"]]
-    data += [[row['Ledger'], f"{row['Weighted Days Late']:.2f}"] for _, row in summary_table.iterrows()]
-    table = Table(data, colWidths=[350, 200], hAlign='CENTER')
-    table.setStyle(TableStyle([
-        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-        ("FONTSIZE", (0,0), (-1,0), 14),
-        ("ALIGN", (0,0), (-1,-1), "CENTER"),
-        ("BACKGROUND", (0,0), (-1,0), rl_colors.HexColor("#003366")),
-        ("TEXTCOLOR", (0,0), (-1,0), rl_colors.white),
-        ("ROWBACKGROUNDS", (0,1), (-1,-1), [rl_colors.white, rl_colors.HexColor("#f0f0f0")]),
-        ("GRID", (0,0), (-1,-1), 0.3, rl_colors.gray),
-        ("FONTSIZE", (0,1), (-1,-1), 13),
-        ("BOTTOMPADDING", (0,0), (-1,-1), 6),
-        ("TOPPADDING", (0,0), (-1,-1), 6),
-    ]))
-    elements.append(table)
-    doc.build(elements)
-    buffer.seek(0)
-    return buffer
-
-def make_detailed_pdf_full(df_per_invoice, ledger_name, credit_days, company_address=None):
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=landscape(LETTER), rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
-    elements = []
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle('FileTitle', parent=styles['Title'], alignment=1, fontSize=22, spaceAfter=8, leading=26)
-    subtitle_style = ParagraphStyle('Subtitle', parent=styles['Title'], alignment=1, fontSize=14, spaceAfter=3, leading=18)
-    elements.append(Paragraph(f"Detailed Weighted Days Late Report", title_style))
-    elements.append(Paragraph(f"Ledger: {ledger_name}", subtitle_style))
-    if company_address:
-        elements.append(Paragraph(f"Address: {company_address}", styles['Normal']))
-    elements.append(Paragraph(f"Credit Period Used: <b>{credit_days} days</b>", styles['Normal']))
-    elements.append(Spacer(1, 15))
-    quarter_table = make_quarter_table(df_per_invoice)
-    if not quarter_table.empty:
-        data = [["Quarter", "Weighted Days Late"]]
-        data += [[q, f"{wdl:.2f}"] for q, wdl in zip(quarter_table["Quarter"], quarter_table["Weighted Days Late"])]
-        tbl = Table(data, colWidths=[120, 180], hAlign='LEFT')
-        tbl.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), rl_colors.HexColor("#003366")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), rl_colors.white),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, 0), 13),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [rl_colors.white, rl_colors.HexColor("#f0f0f0")]),
-            ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
-            ("GRID", (0, 0), (-1, -1), 0.3, rl_colors.gray),
-        ]))
-        elements.append(Paragraph("Quarter-wise Weighted Days Late:", styles["Heading3"]))
-        elements.append(tbl)
-        elements.append(Spacer(1, 15))
-        img_buf = plot_wdl_line_chart(quarter_table)
-        elements.append(Paragraph("Weighted Days Late by Quarter (Chart):", styles["Heading3"]))
-        elements.append(Image(img_buf, width=380, height=180))
-        elements.append(Spacer(1, 20))
-    else:
-        elements.append(Paragraph("No sales/payment data for quarter table or chart.", styles["Normal"]))
-    elements.append(Paragraph("Per Invoice Weighted Days Late Table:", styles["Heading3"]))
-    if not df_per_invoice.empty:
-        data = [["Sale Date", "Invoice No", "Sale Amount", "Weighted Days Late"]]
-        for _, row in df_per_invoice.iterrows():
-            data.append([
-                pd.to_datetime(row["Sale_Date"]).strftime("%d-%b-%y") if "Sale_Date" in row else "",
-                row.get("Invoice_No", ""),
-                f"{row.get('Sale_Amount', 0):,.0f}",
-                f"{row.get('Weighted_Days_Late', 0):.2f}",
-            ])
-        tbl = Table(data, colWidths=[90, 110, 120, 160], hAlign='LEFT')
-        tbl.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), rl_colors.HexColor("#003366")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), rl_colors.white),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, 0), 11),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [rl_colors.white, rl_colors.HexColor("#e6e6e6")]),
-            ("GRID", (0, 0), (-1, -1), 0.25, rl_colors.gray),
-        ]))
-        elements.append(tbl)
-    else:
-        elements.append(Paragraph("No sales/payment data for per-invoice table.", styles["Normal"]))
-    doc.build(elements)
-    buffer.seek(0)
-    return buffer
-
 # ----------- STREAMLIT UI -----------
 
 st.set_page_config(page_title="Tally Ledger Weighted Days Late Analyzer", layout="wide")
@@ -293,7 +159,7 @@ Upload a **full Tally ledger group CSV export**.<br>
 - Handles all unnamed (blank) columns in Tally export.<br>
 - Lets you set a credit period (0 = invoice date as due date, N = N days credit)<br>
 - Shows weighted days late for each ledger (summary table)<br>
-- Lets you select any company/ledger for a detailed drilldown (quarter-wise) with PDF export<br>
+- Lets you select any company/ledger for a detailed drilldown (per-invoice).<br>
 """, unsafe_allow_html=True)
 
 uploaded = st.file_uploader("Upload Tally CSV (multi-ledger export)", type=["csv"])
@@ -314,8 +180,6 @@ if uploaded:
     ledgerwise_per_invoice = {}
     for ledger_name, df in ledgers.items():
         df.columns = [c.strip() for c in df.columns]
-        # We'll allow ledgers with at least the required columns (Date, Particulars, Debit, Credit)
-        # Vch Type and Vch No. may be named depending on position (see classify_sales_and_payments)
         required_cols = {"Date", "Particulars", "Debit", "Credit"}
         if df.empty or not required_cols.issubset(set(df.columns)):
             summary_rows.append({"Ledger": ledger_name, "Weighted Days Late": np.nan})
@@ -333,9 +197,6 @@ if uploaded:
     summary_table = pd.DataFrame(summary_rows)
     st.subheader("Summary: Weighted Days Late by Company/Ledger")
     st.dataframe(summary_table, use_container_width=True)
-    if st.button("Download Summary PDF"):
-        buffer = make_summary_pdf(summary_table, credit_days)
-        st.download_button("Download Summary PDF", buffer, file_name="Weighted_Days_Late_Summary.pdf")
     st.divider()
     st.subheader("Company/Ledger Drilldown")
     ledger_list = list(ledgers.keys())
@@ -344,13 +205,5 @@ if uploaded:
         df_per_invoice = ledgerwise_per_invoice[picked_ledger]
         st.write(f"Detailed data for **{picked_ledger}**:")
         st.dataframe(df_per_invoice)
-        if st.button("Download Full Detailed PDF Report"):
-            pdf_buf = make_detailed_pdf_full(
-                df_per_invoice, 
-                picked_ledger, 
-                credit_days, 
-                company_address=ledger_addresses.get(picked_ledger, None)
-            )
-            st.download_button("Download Detailed PDF (full)", pdf_buf, file_name=f"{picked_ledger}_Full_Detailed_WDL_Report.pdf")
 else:
     st.info("Awaiting CSV file upload.")
