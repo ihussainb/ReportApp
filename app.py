@@ -18,14 +18,13 @@ from reportlab.lib.colors import HexColor
 DATE_FMT = "%d-%b-%y"
 QUARTER_MONTHS = {1: "Apr–Jun", 2: "Jul–Sep", 3: "Oct–Dec", 4: "Jan–Mar"}
 
-# --- MODERN PDF STYLES ---
-PRIMARY_COLOR = HexColor('#2a3f5f') # Deep Slate Blue
-SECONDARY_COLOR = HexColor('#f0f4f7') # Light Blue-Gray
-FONT_COLOR_LIGHT = colors.whitesmoke
-FONT_COLOR_DARK = colors.darkslategray
-GRID_COLOR = colors.lightgrey
+# --- MODERN COLOR DEFINITIONS (THE FIX) ---
+# Define colors as simple strings first
+MODERN_BLUE_HEX = '#2a3f5f'
+LIGHT_GRAY_HEX = '#f0f4f7'
+# Convert them to ReportLab objects where needed, use strings directly for Matplotlib
 
-# --- HELPER & PARSING FUNCTIONS ---
+# --- HELPER & PARSING FUNCTIONS (No Changes Here) ---
 def get_fiscal_quarter_label(dt):
     if pd.isna(dt): return "Invalid Date", None, None
     year, month = dt.year, dt.month
@@ -74,7 +73,7 @@ def parse_tally_ledgers(file_content):
         ledger_addresses[current_ledger_name] = current_address
     return ledgers, ledger_addresses
 
-# --- CORE ANALYSIS LOGIC ---
+# --- CORE ANALYSIS LOGIC (No Changes Here) ---
 def classify_sales_and_payments_robust(df, credit_days=0):
     sales, payments = [], []
     df["Parsed_Date"] = pd.to_datetime(df["Date"], format=DATE_FMT, errors="coerce")
@@ -164,11 +163,11 @@ def generate_summary_pdf(summary_data, credit_days):
         table_data.append([item["Company / Ledger"], f"{item['WADL']:.2f}" if isinstance(item['WADL'], (int, float)) else item['WADL']])
     summary_table = Table(table_data, colWidths=[350, 150], hAlign='CENTER')
     summary_table.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), PRIMARY_COLOR), ('TEXTCOLOR',(0,0),(-1,0), FONT_COLOR_LIGHT),
+        ('BACKGROUND', (0,0), (-1,0), HexColor(MODERN_BLUE_HEX)), ('TEXTCOLOR',(0,0),(-1,0), colors.whitesmoke),
         ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'), ('FONTSIZE', (0,0), (-1,0), 12),
         ('BOTTOMPADDING', (0,0), (-1,0), 12), ('TOPPADDING', (0,0), (-1,0), 12),
-        ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, SECONDARY_COLOR]), ('GRID', (0,0), (-1,-1), 1, GRID_COLOR)
+        ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, HexColor(LIGHT_GRAY_HEX)]), ('GRID', (0,0), (-1,-1), 1, colors.lightgrey)
     ]))
     elements.append(summary_table)
     doc.build(elements)
@@ -182,7 +181,7 @@ def generate_detailed_pdf(ledger_name, grand_wdl, qtr_df, details_df, credit_day
     styles.add(ParagraphStyle(name='CenterTitle', parent=styles['Title'], alignment=TA_CENTER))
     styles.add(ParagraphStyle(name='CenterH2', parent=styles['h2'], alignment=TA_CENTER))
     styles.add(ParagraphStyle(name='CenterH3', parent=styles['h3'], alignment=TA_CENTER, textColor=colors.darkgrey))
-    styles.add(ParagraphStyle(name='LeftH3', parent=styles['h3'], alignment=TA_LEFT, fontName='Helvetica-Bold', textColor=FONT_COLOR_DARK))
+    styles.add(ParagraphStyle(name='LeftH3', parent=styles['h3'], alignment=TA_LEFT, fontName='Helvetica-Bold', textColor=colors.darkslategray))
     elements = []
     elements.append(Paragraph(f"Ledger - {ledger_name}", styles['CenterTitle']))
     elements.append(Paragraph("Weighted Avg Days Late & Quarterly Sales Report", styles['CenterH2']))
@@ -196,11 +195,11 @@ def generate_detailed_pdf(ledger_name, grand_wdl, qtr_df, details_df, credit_day
         qtr_table_data.append([row["Quarter Label"], f"{row['Wtd Avg Days Late']:.2f}", format_amount_lakhs(row['Total Sales']), int(row['Invoices'])])
     qtr_summary_table = Table(qtr_table_data, colWidths=[170, 150, 120, 80], hAlign='CENTER')
     qtr_summary_table.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), PRIMARY_COLOR), ('TEXTCOLOR',(0,0),(-1,0), FONT_COLOR_LIGHT),
+        ('BACKGROUND', (0,0), (-1,0), HexColor(MODERN_BLUE_HEX)), ('TEXTCOLOR',(0,0),(-1,0), colors.whitesmoke),
         ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'), ('FONTSIZE', (0,0), (-1,0), 11),
         ('BOTTOMPADDING', (0,0), (-1,0), 10), ('TOPPADDING', (0,0), (-1,0), 10),
-        ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, SECONDARY_COLOR]), ('GRID', (0,0), (-1,-1), 1, GRID_COLOR)
+        ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, HexColor(LIGHT_GRAY_HEX)]), ('GRID', (0,0), (-1,-1), 1, colors.lightgrey)
     ]))
     elements.append(qtr_summary_table)
     elements.append(Spacer(1, 24))
@@ -217,10 +216,10 @@ def generate_detailed_pdf(ledger_name, grand_wdl, qtr_df, details_df, credit_day
             invoice_data.append([row["Sale Date"], row["Invoice No"], f"{row['Sale Amount']:,.2f}", f"{row['Weighted Days Late']:.2f}", f"{row['Amount Remaining']:,.2f}"])
         invoice_table = Table(invoice_data, colWidths=[90, 140, 110, 110, 120])
         invoice_table.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,0), PRIMARY_COLOR), ('TEXTCOLOR',(0,0),(-1,0), FONT_COLOR_LIGHT),
+            ('BACKGROUND', (0,0), (-1,0), HexColor(MODERN_BLUE_HEX)), ('TEXTCOLOR',(0,0),(-1,0), colors.whitesmoke),
             ('ALIGN', (0,0), (1, -1), 'LEFT'), ('ALIGN', (2,0), (-1,-1), 'RIGHT'),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-            ('GRID', (0,0), (-1,-1), 1, GRID_COLOR), ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, SECONDARY_COLOR])
+            ('GRID', (0,0), (-1,-1), 1, colors.lightgrey), ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, HexColor(LIGHT_GRAY_HEX)])
         ]))
         elements.append(invoice_table)
         elements.append(Spacer(1, 18))
@@ -235,7 +234,6 @@ st.title("📈 Tally Ledger WADL Analyzer")
 uploaded_file = st.file_uploader("Upload Tally Multi-Ledger CSV File", type=["csv"])
 
 if uploaded_file:
-    # --- ADDED CACHE CLEARING BUTTON ---
     if st.button("Clear Cache & Rerun Analysis"):
         st.cache_data.clear()
         st.success("Cache cleared. Re-running analysis with the latest code.")
@@ -291,7 +289,8 @@ if uploaded_file:
             st.table(qtr_display_df)
             fig, ax = plt.subplots(figsize=(10, 4))
             chart_df = details_df.sort_values(by="Sale_Date_DT")
-            ax.plot(chart_df["Sale_Date_DT"], chart_df["Weighted Days Late"], marker='o', linestyle='-', markersize=4, color=PRIMARY_COLOR)
+            # THIS IS THE FIX: Use the hex string directly for Matplotlib
+            ax.plot(chart_df["Sale_Date_DT"], chart_df["Weighted Days Late"], marker='o', linestyle='-', markersize=4, color=MODERN_BLUE_HEX)
             ax.set_title(f"WADL Over Time for {selected_ledger}")
             ax.set_xlabel("Sale Date")
             ax.set_ylabel("Weighted Days Late")
