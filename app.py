@@ -2,7 +2,15 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import timedelta
-from io import StringIO
+from io import BytesIO
+import tempfile
+import matplotlib.pyplot as plt
+
+# --- PDF & Charting Libraries ---
+from reportlab.lib.pagesizes import LETTER, landscape
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
 
 # --- CONFIGURATION ---
 DATE_FMT = "%d-%b-%y"
@@ -25,6 +33,7 @@ def format_amount_lakhs(n):
         return f"{n:,.0f}"
     except (ValueError, TypeError): return "N/A"
 
+@st.cache_data
 def parse_tally_ledgers(file_content):
     ledgers, ledger_addresses = {}, {}
     current_ledger_rows, current_ledger_name, current_address, headers = [], None, None, None
@@ -68,11 +77,7 @@ def classify_sales_and_payments_robust(df, credit_days=0):
         except (ValueError, TypeError): debit_amt = 0.0
         try: credit_amt = float(str(row.get("Credit", "0")).replace(",", ""))
         except (ValueError, TypeError): credit_amt = 0.0
-
-        # FIX #1: Exclude "Opening Balance" from all calculations, per user's target report.
-        if "OPENING BALANCE" in particulars or "CLOSING BALANCE" in particulars:
-            continue
-
+        if "OPENING BALANCE" in particulars or "CLOSING BALANCE" in particulars: continue
         if "CREDIT NOTE" in vch_type and credit_amt > 0:
             payments.append({"date": row["Parsed_Date"], "amount": credit_amt, "vch_no": row["Vch No."]})
             continue
@@ -98,8 +103,13 @@ def allocate_payments_fifo(sales, payments):
             if sale['remaining'] < 0.01: sale_idx += 1
             if payment_remaining < 0.01: break
 
-def analyze_ledger_performance(sales):
-    total_weighted_impact, total_sale_amount = 0, 0
+@st.cache_data
+def analyze_ledger_performance(_df, credit_days):
+    sales, payments = classify_sales_and_payments_robust(_df, credit_days)
+    if not sales: return 0, pd.DataFrame(), pd.DataFrame()
+    allocate_payments_fifo(sales, payments)
+    
+    total_weighted_impact, total_sale_amount_paid = 0, 0
     invoice_details = []
     for sale in sales:
         if sale['amount'] == 0: continue
@@ -115,15 +125,12 @@ def analyze_ledger_performance(sales):
         })
         if sale['remaining'] < 0.01:
             total_weighted_impact += invoice_weighted_impact
-            total_sale_amount += sale['amount']
+            total_sale_amount_paid += sale['amount']
 
-    overall_wdl = round(total_weighted_impact / total_sale_amount, 2) if total_sale_amount > 0 else 0
-    if not invoice_details: return overall_wdl, pd.DataFrame(), pd.DataFrame()
+    overall_wdl_paid_only = round(total_weighted_impact / total_sale_amount_paid, 2) if total_sale_amount_paid > 0 else 0
+    if not invoice_details: return overall_wdl_paid_only, pd.DataFrame(), pd.DataFrame()
 
     details_df = pd.DataFrame(invoice_details)
-    
-    # FIX #2: Calculate quarterly summary based on ALL invoices, not just paid ones.
-    # This aligns the logic with the user's target report.
     quarterly_summary = details_df.groupby('Quarter Label').apply(
         lambda g: pd.Series({
             'Wtd Avg Days Late': np.average(g['Weighted Days Late'], weights=g['Sale Amount']),
@@ -135,73 +142,193 @@ def analyze_ledger_performance(sales):
     quarterly_summary = pd.concat([quarterly_summary, q_labels_df], axis=1)
     quarterly_summary = quarterly_summary.sort_values(['Fiscal Year', 'Fiscal Quarter']).drop(columns=['label', 'Fiscal Year', 'Fiscal Quarter'])
 
-    return overall_wdl, details_df, quarterly_summary
+    return overall_wdl_paid_only, details_df, quarterly_summary
+
+# --- PDF GENERATION FUNCTIONS ---
+def generate_summary_pdf(summary_data, credit_days):
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=LETTER, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=72)
+    styles = getSampleStyleSheet()
+    elements = []
+    
+    elements.append(Paragraph("Overall Summary of Weighted Average Days Late", styles['h1']))
+    elements.append(Paragraph(f"Based on a Credit Period of {credit_days} Days", styles['h3']))
+    elements.append(Spacer(1, 24))
+    
+    table_data = [["Company / Ledger", "WADL (Paid Invoices Only)"]]
+    for item in summary_data:
+        table_data.append([item["Company / Ledger"], f"{item['WADL']:.2f}" if isinstance(item['WADL'], (int, float)) else item['WADL']])
+    
+    summary_table = Table(table_data, colWidths=[350, 150])
+    summary_table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.grey),
+        ('TEXTCOLOR',(0,0),(-1,0),colors.whitesmoke),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('BOTTOMPADDING', (0,0), (-1,0), 12),
+        ('BACKGROUND', (0,1), (-1,-1), colors.beige),
+        ('GRID', (0,0), (-1,-1), 1, colors.black)
+    ]))
+    elements.append(summary_table)
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
+
+def generate_detailed_pdf(ledger_name, grand_wdl, qtr_df, details_df, credit_days, chart_path):
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(LETTER), rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+    styles = getSampleStyleSheet()
+    elements = []
+
+    # --- First Page Header ---
+    elements.append(Paragraph(f"Ledger - {ledger_name}", styles['Title']))
+    elements.append(Paragraph("Weighted Avg Days Late & Quarterly Sales Report", styles['h2']))
+    elements.append(Paragraph(f"By Fiscal Year — {credit_days} Days Credit Period", styles['h3']))
+    elements.append(Spacer(1, 12))
+    elements.append(Paragraph(f"Grand Weighted Avg Days Late (Paid Invoices Only): <b>{grand_wdl:.2f}</b>", styles['h2']))
+    elements.append(Spacer(1, 12))
+
+    # --- Quarterly Summary Table ---
+    qtr_table_data = [["Quarter", "Wtd Avg Days Late", "Total Sales", "Invoices"]]
+    for _, row in qtr_df.iterrows():
+        qtr_table_data.append([row["Quarter Label"], f"{row['Wtd Avg Days Late']:.2f}", format_amount_lakhs(row['Total Sales']), int(row['Invoices'])])
+    
+    qtr_summary_table = Table(qtr_table_data, colWidths=[170, 150, 120, 80])
+    qtr_summary_table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.darkblue), ('TEXTCOLOR',(0,0),(-1,0),colors.whitesmoke),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('BOTTOMPADDING', (0,0), (-1,0), 12), ('BACKGROUND', (0,1), (-1,-1), colors.lightblue),
+        ('GRID', (0,0), (-1,-1), 1, colors.black)
+    ]))
+    elements.append(qtr_summary_table)
+    elements.append(Spacer(1, 12))
+
+    # --- Chart ---
+    if chart_path:
+        elements.append(Image(chart_path, width=480, height=240))
+        elements.append(Spacer(1, 12))
+
+    # --- Per-Quarter Invoice Details ---
+    details_df_sorted = details_df.sort_values(by="Sale_Date_DT")
+    for q_label in qtr_df['Quarter Label']:
+        q_wdl = qtr_df[qtr_df['Quarter Label'] == q_label]['Wtd Avg Days Late'].iloc[0]
+        elements.append(Paragraph(f"{q_label}: Weighted Avg Days Late = {q_wdl:.2f}", styles['h3']))
+        
+        q_invoices = details_df_sorted[details_df_sorted['Quarter Label'] == q_label]
+        invoice_data = [["Sale Date", "Invoice No", "Sale Amount", "Weighted Days Late", "Amount Remaining"]]
+        for _, row in q_invoices.iterrows():
+            invoice_data.append([row["Sale Date"], row["Invoice No"], f"{row['Sale Amount']:,.2f}", f"{row['Weighted Days Late']:.2f}", f"{row['Amount Remaining']:,.2f}"])
+        
+        invoice_table = Table(invoice_data, colWidths=[90, 140, 100, 120, 120])
+        invoice_table.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.darkgreen), ('TEXTCOLOR',(0,0),(-1,0),colors.whitesmoke),
+            ('ALIGN', (2,1), (-1,-1), 'RIGHT'), ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('GRID', (0,0), (-1,-1), 1, colors.black), ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.lightgrey, colors.white])
+        ]))
+        elements.append(invoice_table)
+        elements.append(Spacer(1, 18))
+
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
 
 # --- STREAMLIT UI ---
-st.set_page_config(page_title="Tally Ledger Analyzer", layout="wide")
-st.title("📈 Tally Ledger Weighted Days Late Analyzer")
-st.markdown("Upload a Tally **Group of Accounts** CSV export to analyze payment delays.")
+st.set_page_config(layout="wide")
+st.title("📈 Tally Ledger WADL Analyzer")
 
 uploaded_file = st.file_uploader("Upload Tally Multi-Ledger CSV File", type=["csv"])
-credit_days = st.number_input("Credit Period (in days)", min_value=0, value=30, step=1)
 
 if uploaded_file:
-    try: file_content = uploaded_file.getvalue().decode('utf-8')
-    except UnicodeDecodeError: file_content = uploaded_file.getvalue().decode('latin-1')
-
+    file_content = uploaded_file.getvalue().decode('utf-8', errors='ignore')
     ledgers, ledger_addresses = parse_tally_ledgers(file_content)
-    if not ledgers: st.error("No ledgers found. Please check the file format."); st.stop()
+    
+    if not ledgers:
+        st.error("No ledgers could be parsed. Please check the file format.")
+        st.stop()
 
-    st.success(f"Successfully parsed **{len(ledgers)}** ledgers.")
+    credit_days = st.number_input("Enter Credit Period (days)", min_value=0, value=30, step=1, help="0 means due date is the invoice date.")
 
+    # --- Run Analysis for all ledgers ---
     summary_data, detailed_reports, quarterly_reports = [], {}, {}
     with st.spinner("Analyzing all ledgers..."):
         for name, df in ledgers.items():
-            if df.empty: continue
-            sales, payments = classify_sales_and_payments_robust(df, credit_days)
-            if not sales:
-                summary_data.append({"Company / Ledger": name, "Overall Weighted Days Late (Paid Only)": "No Sales", "Address": ledger_addresses.get(name, "N/A")})
-                continue
-            allocate_payments_fifo(sales, payments)
-            wdl, details_df, qtr_df = analyze_ledger_performance(sales)
-            summary_data.append({"Company / Ledger": name, "Overall Weighted Days Late (Paid Only)": wdl, "Address": ledger_addresses.get(name, "N/A")})
+            wdl, details_df, qtr_df = analyze_ledger_performance(df, credit_days)
+            summary_data.append({"Company / Ledger": name, "WADL": wdl})
             detailed_reports[name] = details_df
             quarterly_reports[name] = qtr_df
 
     st.divider()
-    st.header("🏢 Overall Company Summary")
-    st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
+    
+    # --- SECTION 1: OVERALL SUMMARY ---
+    st.header("Overall Summary of Weighted Average Days Late of All Ledgers")
+    st.markdown(f"**Credit Period Set To:** {credit_days} Days")
+    
+    summary_df = pd.DataFrame(summary_data)
+    st.dataframe(summary_df, use_container_width=True)
+    
+    summary_pdf_buffer = generate_summary_pdf(summary_data, credit_days)
+    st.download_button(
+        label="Download Summary as PDF",
+        data=summary_pdf_buffer,
+        file_name=f"WADL_Summary_{credit_days}days.pdf",
+        mime="application/pdf"
+    )
 
     st.divider()
-    st.header("📊 Detailed Drill-Down Report")
-    selected_ledger = st.selectbox("Choose a company for a detailed quarterly report:", options=list(ledgers.keys()))
 
-    if selected_ledger and selected_ledger in detailed_reports:
-        st.subheader(f"Report for: {selected_ledger}")
-        st.markdown(f"**Address:** {ledger_addresses.get(selected_ledger, 'N/A')}")
-        
-        qtr_df = quarterly_reports.get(selected_ledger)
-        details_df = detailed_reports.get(selected_ledger)
+    # --- SECTION 2: DETAILED ANALYSIS ---
+    st.header("In-depth Analysis per Company")
+    selected_ledger = st.selectbox("Choose a company for a detailed report:", options=list(ledgers.keys()))
 
-        if qtr_df is not None and not qtr_df.empty:
-            st.markdown("#### Quarterly Performance Summary")
+    if selected_ledger:
+        grand_wdl = next((item['WADL'] for item in summary_data if item['Company / Ledger'] == selected_ledger), 0)
+        details_df = detailed_reports[selected_ledger]
+        qtr_df = quarterly_reports[selected_ledger]
+
+        if not details_df.empty:
+            # --- Display detailed report on screen ---
+            st.subheader(f"Ledger - {selected_ledger}")
+            st.markdown(f"**Weighted Avg Days Late & Quarterly Sales Report**")
+            st.markdown(f"By Fiscal Year — {credit_days} Days Credit Period")
+            st.markdown(f"#### Grand Weighted Avg Days Late (Paid Invoices Only): {grand_wdl:.2f}")
+
+            st.markdown("##### Quarterly Performance Summary")
             qtr_display_df = qtr_df.copy()
             qtr_display_df['Wtd Avg Days Late'] = qtr_display_df['Wtd Avg Days Late'].map('{:,.2f}'.format)
             qtr_display_df['Total Sales'] = qtr_display_df['Total Sales'].apply(format_amount_lakhs)
             st.table(qtr_display_df)
 
-            st.markdown("#### Invoice-by-Invoice Details (Grouped by Quarter)")
-            details_df_sorted = details_df.sort_values(by="Sale_Date_DT")
+            # --- Generate and display chart ---
+            fig, ax = plt.subplots(figsize=(10, 4))
+            chart_df = details_df.sort_values(by="Sale_Date_DT")
+            ax.plot(chart_df["Sale_Date_DT"], chart_df["Weighted Days Late"], marker='o', linestyle='-', markersize=4)
+            ax.set_title(f"WADL Over Time for {selected_ledger}")
+            ax.set_xlabel("Sale Date")
+            ax.set_ylabel("Weighted Days Late")
+            plt.grid(True)
+            st.pyplot(fig)
             
-            for q_label in qtr_display_df['Quarter Label']:
-                wdl_val = qtr_display_df[qtr_display_df['Quarter Label'] == q_label]['Wtd Avg Days Late'].iloc[0]
-                with st.expander(f"**{q_label}** (WDL: {wdl_val})"):
+            # --- Display per-quarter invoice tables ---
+            st.markdown("##### Invoice-by-Invoice Details (Grouped by Quarter)")
+            details_df_sorted = details_df.sort_values(by="Sale_Date_DT")
+            for q_label in qtr_df['Quarter Label']:
+                q_wdl_val = qtr_df[qtr_df['Quarter Label'] == q_label]['Wtd Avg Days Late'].iloc[0]
+                with st.expander(f"**{q_label}** (WDL: {q_wdl_val:.2f})"):
                     q_invoices = details_df_sorted[details_df_sorted['Quarter Label'] == q_label]
                     st.dataframe(q_invoices.drop(columns=['Sale_Date_DT', 'Quarter Label', 'Fiscal Year', 'Fiscal Quarter']), use_container_width=True)
-        elif details_df is not None and not details_df.empty:
-             st.markdown("#### All Invoice Details")
-             st.dataframe(details_df.drop(columns=['Sale_Date_DT']), use_container_width=True)
+
+            # --- Generate and provide download for detailed PDF ---
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
+                fig.savefig(tmpfile.name, bbox_inches='tight')
+                detailed_pdf_buffer = generate_detailed_pdf(selected_ledger, grand_wdl, qtr_df, details_df, credit_days, tmpfile.name)
+            
+            st.download_button(
+                label=f"Download Detailed Report for {selected_ledger} as PDF",
+                data=detailed_pdf_buffer,
+                file_name=f"Detailed_Report_{selected_ledger}_{credit_days}days.pdf",
+                mime="application/pdf"
+            )
         else:
-            st.info("No sales data available to generate a report for this ledger.")
+            st.warning("No sales data available to generate a detailed report for this ledger.")
 else:
-    st.info("Awaiting your Tally CSV file upload.")
+    st.info("Awaiting your Tally CSV file upload to begin analysis.")
