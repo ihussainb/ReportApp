@@ -18,7 +18,14 @@ from reportlab.lib.colors import HexColor
 DATE_FMT = "%d-%b-%y"
 QUARTER_MONTHS = {1: "Apr–Jun", 2: "Jul–Sep", 3: "Oct–Dec", 4: "Jan–Mar"}
 
-# --- HELPER & PARSING FUNCTIONS (No Changes Here) ---
+# --- MODERN PDF STYLES ---
+PRIMARY_COLOR = HexColor('#2a3f5f') # Deep Slate Blue
+SECONDARY_COLOR = HexColor('#f0f4f7') # Light Blue-Gray
+FONT_COLOR_LIGHT = colors.whitesmoke
+FONT_COLOR_DARK = colors.darkslategray
+GRID_COLOR = colors.lightgrey
+
+# --- HELPER & PARSING FUNCTIONS ---
 def get_fiscal_quarter_label(dt):
     if pd.isna(dt): return "Invalid Date", None, None
     year, month = dt.year, dt.month
@@ -67,7 +74,7 @@ def parse_tally_ledgers(file_content):
         ledger_addresses[current_ledger_name] = current_address
     return ledgers, ledger_addresses
 
-# --- CORE ANALYSIS LOGIC (No Changes Here) ---
+# --- CORE ANALYSIS LOGIC ---
 def classify_sales_and_payments_robust(df, credit_days=0):
     sales, payments = [], []
     df["Parsed_Date"] = pd.to_datetime(df["Date"], format=DATE_FMT, errors="coerce")
@@ -140,46 +147,28 @@ def analyze_ledger_performance(df, credit_days):
     quarterly_summary = quarterly_summary.sort_values(['Fiscal Year', 'Fiscal Quarter']).drop(columns=['label', 'Fiscal Year', 'Fiscal Quarter'])
     return overall_wdl_paid_only, details_df, quarterly_summary
 
-# --- PDF GENERATION FUNCTIONS (REFORMATTED) ---
-
-# --- MODERN PDF STYLES ---
-PRIMARY_COLOR = HexColor('#2a3f5f')
-SECONDARY_COLOR = HexColor('#f0f4f7')
-FONT_COLOR_LIGHT = colors.whitesmoke
-FONT_COLOR_DARK = colors.darkslategray
-GRID_COLOR = colors.lightgrey
-
+# --- PDF GENERATION FUNCTIONS (WITH PROFESSIONAL STYLING) ---
 def generate_summary_pdf(summary_data, credit_days):
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=LETTER, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=72)
-    
     styles = getSampleStyleSheet()
-    # Add centered styles
     styles.add(ParagraphStyle(name='CenterH1', parent=styles['h1'], alignment=TA_CENTER))
     styles.add(ParagraphStyle(name='CenterH3', parent=styles['h3'], alignment=TA_CENTER, textColor=colors.darkgrey))
-
     elements = []
     elements.append(Paragraph("Overall Summary of Weighted Average Days Late", styles['CenterH1']))
     elements.append(Spacer(1, 6))
     elements.append(Paragraph(f"Based on a Credit Period of {credit_days} Days", styles['CenterH3']))
     elements.append(Spacer(1, 24))
-    
     table_data = [["Company / Ledger", "WADL (Paid Invoices Only)"]]
     for item in summary_data:
         table_data.append([item["Company / Ledger"], f"{item['WADL']:.2f}" if isinstance(item['WADL'], (int, float)) else item['WADL']])
-    
     summary_table = Table(table_data, colWidths=[350, 150], hAlign='CENTER')
     summary_table.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), PRIMARY_COLOR),
-        ('TEXTCOLOR',(0,0),(-1,0), FONT_COLOR_LIGHT),
-        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0,0), (-1,0), 12),
-        ('BOTTOMPADDING', (0,0), (-1,0), 12),
-        ('TOPPADDING', (0,0), (-1,0), 12),
-        ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, SECONDARY_COLOR]),
-        ('GRID', (0,0), (-1,-1), 1, GRID_COLOR)
+        ('BACKGROUND', (0,0), (-1,0), PRIMARY_COLOR), ('TEXTCOLOR',(0,0),(-1,0), FONT_COLOR_LIGHT),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'), ('FONTSIZE', (0,0), (-1,0), 12),
+        ('BOTTOMPADDING', (0,0), (-1,0), 12), ('TOPPADDING', (0,0), (-1,0), 12),
+        ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, SECONDARY_COLOR]), ('GRID', (0,0), (-1,-1), 1, GRID_COLOR)
     ]))
     elements.append(summary_table)
     doc.build(elements)
@@ -189,17 +178,12 @@ def generate_summary_pdf(summary_data, credit_days):
 def generate_detailed_pdf(ledger_name, grand_wdl, qtr_df, details_df, credit_days, chart_path):
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(LETTER), rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
-    
     styles = getSampleStyleSheet()
-    # Add centered styles
     styles.add(ParagraphStyle(name='CenterTitle', parent=styles['Title'], alignment=TA_CENTER))
     styles.add(ParagraphStyle(name='CenterH2', parent=styles['h2'], alignment=TA_CENTER))
     styles.add(ParagraphStyle(name='CenterH3', parent=styles['h3'], alignment=TA_CENTER, textColor=colors.darkgrey))
-    styles.add(ParagraphStyle(name='LeftH3', parent=styles['h3'], alignment=TA_LEFT))
-
+    styles.add(ParagraphStyle(name='LeftH3', parent=styles['h3'], alignment=TA_LEFT, fontName='Helvetica-Bold', textColor=FONT_COLOR_DARK))
     elements = []
-
-    # --- First Page Header (Centered) ---
     elements.append(Paragraph(f"Ledger - {ledger_name}", styles['CenterTitle']))
     elements.append(Paragraph("Weighted Avg Days Late & Quarterly Sales Report", styles['CenterH2']))
     elements.append(Spacer(1, 6))
@@ -207,40 +191,30 @@ def generate_detailed_pdf(ledger_name, grand_wdl, qtr_df, details_df, credit_day
     elements.append(Spacer(1, 12))
     elements.append(Paragraph(f"Grand Weighted Avg Days Late (Paid Invoices Only): <b>{grand_wdl:.2f}</b>", styles['CenterH2']))
     elements.append(Spacer(1, 24))
-
-    # --- Quarterly Summary Table ---
     qtr_table_data = [["Quarter", "Wtd Avg Days Late", "Total Sales", "Invoices"]]
     for _, row in qtr_df.iterrows():
         qtr_table_data.append([row["Quarter Label"], f"{row['Wtd Avg Days Late']:.2f}", format_amount_lakhs(row['Total Sales']), int(row['Invoices'])])
-    
     qtr_summary_table = Table(qtr_table_data, colWidths=[170, 150, 120, 80], hAlign='CENTER')
     qtr_summary_table.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,0), PRIMARY_COLOR), ('TEXTCOLOR',(0,0),(-1,0), FONT_COLOR_LIGHT),
         ('ALIGN', (0,0), (-1,-1), 'CENTER'), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
         ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'), ('FONTSIZE', (0,0), (-1,0), 11),
         ('BOTTOMPADDING', (0,0), (-1,0), 10), ('TOPPADDING', (0,0), (-1,0), 10),
-        ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, SECONDARY_COLOR]),
-        ('GRID', (0,0), (-1,-1), 1, GRID_COLOR)
+        ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, SECONDARY_COLOR]), ('GRID', (0,0), (-1,-1), 1, GRID_COLOR)
     ]))
     elements.append(qtr_summary_table)
     elements.append(Spacer(1, 24))
-
-    # --- Chart ---
     if chart_path:
         elements.append(Image(chart_path, width=540, height=270, hAlign='CENTER'))
         elements.append(Spacer(1, 24))
-
-    # --- Per-Quarter Invoice Details ---
     details_df_sorted = details_df.sort_values(by="Sale_Date_DT")
     for q_label in qtr_df['Quarter Label']:
         q_wdl = qtr_df[qtr_df['Quarter Label'] == q_label]['Wtd Avg Days Late'].iloc[0]
         elements.append(Paragraph(f"{q_label}: Weighted Avg Days Late = {q_wdl:.2f}", styles['LeftH3']))
-        
         q_invoices = details_df_sorted[details_df_sorted['Quarter Label'] == q_label]
         invoice_data = [["Sale Date", "Invoice No", "Sale Amount", "Wtd Days Late", "Amount Remaining"]]
         for _, row in q_invoices.iterrows():
             invoice_data.append([row["Sale Date"], row["Invoice No"], f"{row['Sale Amount']:,.2f}", f"{row['Weighted Days Late']:.2f}", f"{row['Amount Remaining']:,.2f}"])
-        
         invoice_table = Table(invoice_data, colWidths=[90, 140, 110, 110, 120])
         invoice_table.setStyle(TableStyle([
             ('BACKGROUND', (0,0), (-1,0), PRIMARY_COLOR), ('TEXTCOLOR',(0,0),(-1,0), FONT_COLOR_LIGHT),
@@ -250,18 +224,22 @@ def generate_detailed_pdf(ledger_name, grand_wdl, qtr_df, details_df, credit_day
         ]))
         elements.append(invoice_table)
         elements.append(Spacer(1, 18))
-
     doc.build(elements)
     buffer.seek(0)
     return buffer
 
-# --- STREAMLIT UI (No Changes Here) ---
+# --- STREAMLIT UI ---
 st.set_page_config(layout="wide")
 st.title("📈 Tally Ledger WADL Analyzer")
 
 uploaded_file = st.file_uploader("Upload Tally Multi-Ledger CSV File", type=["csv"])
 
 if uploaded_file:
+    # --- ADDED CACHE CLEARING BUTTON ---
+    if st.button("Clear Cache & Rerun Analysis"):
+        st.cache_data.clear()
+        st.success("Cache cleared. Re-running analysis with the latest code.")
+    
     file_content = uploaded_file.getvalue().decode('utf-8', errors='ignore')
     ledgers, ledger_addresses = parse_tally_ledgers(file_content)
     
@@ -283,16 +261,12 @@ if uploaded_file:
     
     st.header("Overall Summary of Weighted Average Days Late of All Ledgers")
     st.markdown(f"**Credit Period Set To:** {credit_days} Days")
-    
     summary_df = pd.DataFrame(summary_data)
     st.dataframe(summary_df, use_container_width=True)
-    
     summary_pdf_buffer = generate_summary_pdf(summary_data, credit_days)
     st.download_button(
-        label="Download Summary as PDF",
-        data=summary_pdf_buffer,
-        file_name=f"WADL_Summary_{credit_days}days.pdf",
-        mime="application/pdf"
+        label="Download Summary as PDF", data=summary_pdf_buffer,
+        file_name=f"WADL_Summary_{credit_days}days.pdf", mime="application/pdf"
     )
 
     st.divider()
@@ -310,13 +284,11 @@ if uploaded_file:
             st.markdown(f"**Weighted Avg Days Late & Quarterly Sales Report**")
             st.markdown(f"By Fiscal Year — {credit_days} Days Credit Period")
             st.markdown(f"#### Grand Weighted Avg Days Late (Paid Invoices Only): {grand_wdl:.2f}")
-
             st.markdown("##### Quarterly Performance Summary")
             qtr_display_df = qtr_df.copy()
             qtr_display_df['Wtd Avg Days Late'] = qtr_display_df['Wtd Avg Days Late'].map('{:,.2f}'.format)
             qtr_display_df['Total Sales'] = qtr_display_df['Total Sales'].apply(format_amount_lakhs)
             st.table(qtr_display_df)
-
             fig, ax = plt.subplots(figsize=(10, 4))
             chart_df = details_df.sort_values(by="Sale_Date_DT")
             ax.plot(chart_df["Sale_Date_DT"], chart_df["Weighted Days Late"], marker='o', linestyle='-', markersize=4, color=PRIMARY_COLOR)
@@ -325,7 +297,6 @@ if uploaded_file:
             ax.set_ylabel("Weighted Days Late")
             plt.grid(True, linestyle='--', alpha=0.6)
             st.pyplot(fig)
-            
             st.markdown("##### Invoice-by-Invoice Details (Grouped by Quarter)")
             details_df_sorted = details_df.sort_values(by="Sale_Date_DT")
             for q_label in qtr_df['Quarter Label']:
@@ -333,11 +304,9 @@ if uploaded_file:
                 with st.expander(f"**{q_label}** (WDL: {q_wdl_val:.2f})"):
                     q_invoices = details_df_sorted[details_df_sorted['Quarter Label'] == q_label]
                     st.dataframe(q_invoices.drop(columns=['Sale_Date_DT', 'Quarter Label', 'Fiscal Year', 'Fiscal Quarter']), use_container_width=True)
-
             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
                 fig.savefig(tmpfile.name, bbox_inches='tight', dpi=300)
                 detailed_pdf_buffer = generate_detailed_pdf(selected_ledger, grand_wdl, qtr_df, details_df, credit_days, tmpfile.name)
-            
             st.download_button(
                 label=f"Download Detailed Report for {selected_ledger} as PDF",
                 data=detailed_pdf_buffer,
