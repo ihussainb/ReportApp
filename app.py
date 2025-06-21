@@ -13,7 +13,7 @@ DATE_FMT = "%d-%b-%y"
 
 # ----------- ROBUST PARSE LEDGERS -----------
 def parse_tally_ledgers(file):
-    """Robustly parse Tally group export CSV into ledgers dict."""
+    """Robustly parse Tally group export CSV into ledgers dict, correctly handling unnamed columns."""
     if hasattr(file, "read"):
         file.seek(0)
         try:
@@ -31,10 +31,9 @@ def parse_tally_ledgers(file):
     headers = None
     rows = []
     for i, line in enumerate(lines):
-        # Remove BOM and trailing newlines
         line = line.replace("\ufeff", "").rstrip('\n\r')
         cells = [c.strip() for c in line.split(",")]
-        # Ledger header
+        # Ledger start
         if cells and cells[0].startswith("Ledger:"):
             if current_ledger and headers and rows:
                 df = pd.DataFrame(rows, columns=headers)
@@ -46,23 +45,22 @@ def parse_tally_ledgers(file):
             headers = None
             rows = []
             continue
-        # Address is right after Ledger header
+        # Address line
         if current_ledger and current_address is None and any(cells):
             current_address = cells[0]
             continue
-        # Robust header detection (relaxed on blank cols/extra spaces)
+        # Header row - keep ALL columns, name blanks as Unnamed_{i}
         if any("Date" in c for c in cells) and "Debit" in cells and "Credit" in cells:
-            headers = [c.strip() for c in cells if c.strip()]
+            headers = [c.strip() if c.strip() else f"Unnamed_{i}" for i, c in enumerate(cells)]
             rows = []
             continue
-        # Transaction row (must have header)
+        # Transaction row
         if headers and (len([x for x in cells if x]) >= 5) and not (
             (cells[1] if len(cells) > 1 else "").startswith("Closing Balance")):
             if cells[0] and (cells[0][0].isdigit() or cells[0][0] == '0'):
                 while len(cells) < len(headers):
                     cells.append("")
                 rows.append([c.strip() for c in cells[:len(headers)]])
-    # Last ledger
     if current_ledger and headers and rows:
         df = pd.DataFrame(rows, columns=headers)
         df.columns = [c.strip() for c in df.columns]
@@ -74,15 +72,37 @@ def parse_tally_ledgers(file):
 def classify_sales_and_payments(df, credit_days=0):
     sales = []
     payments = []
-    df.columns = [c.strip() for c in df.columns]  # ensure normalized columns
-    df["Parsed_Date"] = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce")
+    df.columns = [c.strip() for c in df.columns]
+    # Detect correct columns for vch type and vch no.
+    # Tally export: ['Date', 'Particulars', 'Unnamed_2', 'Vch Type', 'Vch No.', 'Debit', 'Credit']
+    # If extra unnamed columns, Vch Type is always after the last unnamed
+    colnames = list(df.columns)
+    # Find indexes for key columns
+    date_col = "Date"
+    particulars_col = "Particulars"
+    debit_col = "Debit"
+    credit_col = "Credit"
+    # vch_type is always the first column after the last unnamed column
+    unnamed_cols = [c for c in colnames if c.startswith("Unnamed")]
+    if unnamed_cols:
+        last_unnamed_idx = colnames.index(unnamed_cols[-1])
+        vch_type_col = colnames[last_unnamed_idx + 1]
+    else:
+        vch_type_col = "Vch Type"
+    vch_no_col = "Vch No."
+    # Defensive fallback
+    if vch_type_col not in colnames:
+        vch_type_col = "Vch Type"
+    if vch_no_col not in colnames:
+        vch_no_col = "Vch No."
+    df["Parsed_Date"] = pd.to_datetime(df[date_col], dayfirst=True, errors="coerce")
     for _, row in df.iterrows():
-        vtype = str(row.get("Vch Type", "")).upper()
-        particulars = str(row.get("Particulars", "")).upper()
-        debit = float(str(row.get("Debit", "")).replace(",", "") or 0)
-        credit = float(str(row.get("Credit", "")).replace(",", "") or 0)
+        vtype = str(row.get(vch_type_col, "")).upper()
+        particulars = str(row.get(particulars_col, "")).upper()
+        debit = float(str(row.get(debit_col, "")).replace(",", "") or 0)
+        credit = float(str(row.get(credit_col, "")).replace(",", "") or 0)
         date = row.get("Parsed_Date")
-        vch_no = str(row.get("Vch No.", ""))
+        vch_no = str(row.get(vch_no_col, ""))
         if pd.isna(date): continue
         if "OPENING" in particulars or "CLOSING" in particulars or "JOURNAL" in vtype:
             continue
@@ -144,7 +164,6 @@ def weighted_days_late_calc(sales):
     return wdl, pd.DataFrame(per_invoice)
 
 # ----------- PDF REPORTS -----------
-
 def make_quarter_table(df_per_invoice):
     if df_per_invoice.empty:
         return pd.DataFrame(columns=["Quarter", "Weighted Days Late"])
@@ -271,7 +290,7 @@ st.title("Tally Ledger Weighted Days Late Analyzer")
 
 st.markdown("""
 Upload a **full Tally ledger group CSV export**.<br>
-- Parses every company/ledger<br>
+- Handles all unnamed (blank) columns in Tally export.<br>
 - Lets you set a credit period (0 = invoice date as due date, N = N days credit)<br>
 - Shows weighted days late for each ledger (summary table)<br>
 - Lets you select any company/ledger for a detailed drilldown (quarter-wise) with PDF export<br>
@@ -295,7 +314,9 @@ if uploaded:
     ledgerwise_per_invoice = {}
     for ledger_name, df in ledgers.items():
         df.columns = [c.strip() for c in df.columns]
-        required_cols = {"Date", "Particulars", "Vch Type", "Vch No.", "Debit", "Credit"}
+        # We'll allow ledgers with at least the required columns (Date, Particulars, Debit, Credit)
+        # Vch Type and Vch No. may be named depending on position (see classify_sales_and_payments)
+        required_cols = {"Date", "Particulars", "Debit", "Credit"}
         if df.empty or not required_cols.issubset(set(df.columns)):
             summary_rows.append({"Ledger": ledger_name, "Weighted Days Late": np.nan})
             ledgerwise_per_invoice[ledger_name] = pd.DataFrame()
