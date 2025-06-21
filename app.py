@@ -103,9 +103,9 @@ def allocate_payments_fifo(sales, payments):
             if sale['remaining'] < 0.01: sale_idx += 1
             if payment_remaining < 0.01: break
 
-@st.cache_data
-def analyze_ledger_performance(_df, credit_days):
-    sales, payments = classify_sales_and_payments_robust(_df, credit_days)
+# THE CACHE DECORATOR WAS REMOVED FROM THIS FUNCTION. THIS IS THE FIX.
+def analyze_ledger_performance(df, credit_days):
+    sales, payments = classify_sales_and_payments_robust(df, credit_days)
     if not sales: return 0, pd.DataFrame(), pd.DataFrame()
     allocate_payments_fifo(sales, payments)
     
@@ -180,7 +180,6 @@ def generate_detailed_pdf(ledger_name, grand_wdl, qtr_df, details_df, credit_day
     styles = getSampleStyleSheet()
     elements = []
 
-    # --- First Page Header ---
     elements.append(Paragraph(f"Ledger - {ledger_name}", styles['Title']))
     elements.append(Paragraph("Weighted Avg Days Late & Quarterly Sales Report", styles['h2']))
     elements.append(Paragraph(f"By Fiscal Year — {credit_days} Days Credit Period", styles['h3']))
@@ -188,7 +187,6 @@ def generate_detailed_pdf(ledger_name, grand_wdl, qtr_df, details_df, credit_day
     elements.append(Paragraph(f"Grand Weighted Avg Days Late (Paid Invoices Only): <b>{grand_wdl:.2f}</b>", styles['h2']))
     elements.append(Spacer(1, 12))
 
-    # --- Quarterly Summary Table ---
     qtr_table_data = [["Quarter", "Wtd Avg Days Late", "Total Sales", "Invoices"]]
     for _, row in qtr_df.iterrows():
         qtr_table_data.append([row["Quarter Label"], f"{row['Wtd Avg Days Late']:.2f}", format_amount_lakhs(row['Total Sales']), int(row['Invoices'])])
@@ -203,12 +201,10 @@ def generate_detailed_pdf(ledger_name, grand_wdl, qtr_df, details_df, credit_day
     elements.append(qtr_summary_table)
     elements.append(Spacer(1, 12))
 
-    # --- Chart ---
     if chart_path:
         elements.append(Image(chart_path, width=480, height=240))
         elements.append(Spacer(1, 12))
 
-    # --- Per-Quarter Invoice Details ---
     details_df_sorted = details_df.sort_values(by="Sale_Date_DT")
     for q_label in qtr_df['Quarter Label']:
         q_wdl = qtr_df[qtr_df['Quarter Label'] == q_label]['Wtd Avg Days Late'].iloc[0]
@@ -248,7 +244,6 @@ if uploaded_file:
 
     credit_days = st.number_input("Enter Credit Period (days)", min_value=0, value=30, step=1, help="0 means due date is the invoice date.")
 
-    # --- Run Analysis for all ledgers ---
     summary_data, detailed_reports, quarterly_reports = [], {}, {}
     with st.spinner("Analyzing all ledgers..."):
         for name, df in ledgers.items():
@@ -259,7 +254,6 @@ if uploaded_file:
 
     st.divider()
     
-    # --- SECTION 1: OVERALL SUMMARY ---
     st.header("Overall Summary of Weighted Average Days Late of All Ledgers")
     st.markdown(f"**Credit Period Set To:** {credit_days} Days")
     
@@ -276,7 +270,6 @@ if uploaded_file:
 
     st.divider()
 
-    # --- SECTION 2: DETAILED ANALYSIS ---
     st.header("In-depth Analysis per Company")
     selected_ledger = st.selectbox("Choose a company for a detailed report:", options=list(ledgers.keys()))
 
@@ -286,7 +279,6 @@ if uploaded_file:
         qtr_df = quarterly_reports[selected_ledger]
 
         if not details_df.empty:
-            # --- Display detailed report on screen ---
             st.subheader(f"Ledger - {selected_ledger}")
             st.markdown(f"**Weighted Avg Days Late & Quarterly Sales Report**")
             st.markdown(f"By Fiscal Year — {credit_days} Days Credit Period")
@@ -298,7 +290,6 @@ if uploaded_file:
             qtr_display_df['Total Sales'] = qtr_display_df['Total Sales'].apply(format_amount_lakhs)
             st.table(qtr_display_df)
 
-            # --- Generate and display chart ---
             fig, ax = plt.subplots(figsize=(10, 4))
             chart_df = details_df.sort_values(by="Sale_Date_DT")
             ax.plot(chart_df["Sale_Date_DT"], chart_df["Weighted Days Late"], marker='o', linestyle='-', markersize=4)
@@ -308,7 +299,6 @@ if uploaded_file:
             plt.grid(True)
             st.pyplot(fig)
             
-            # --- Display per-quarter invoice tables ---
             st.markdown("##### Invoice-by-Invoice Details (Grouped by Quarter)")
             details_df_sorted = details_df.sort_values(by="Sale_Date_DT")
             for q_label in qtr_df['Quarter Label']:
@@ -317,7 +307,6 @@ if uploaded_file:
                     q_invoices = details_df_sorted[details_df_sorted['Quarter Label'] == q_label]
                     st.dataframe(q_invoices.drop(columns=['Sale_Date_DT', 'Quarter Label', 'Fiscal Year', 'Fiscal Quarter']), use_container_width=True)
 
-            # --- Generate and provide download for detailed PDF ---
             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
                 fig.savefig(tmpfile.name, bbox_inches='tight')
                 detailed_pdf_buffer = generate_detailed_pdf(selected_ledger, grand_wdl, qtr_df, details_df, credit_days, tmpfile.name)
