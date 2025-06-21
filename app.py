@@ -32,7 +32,8 @@ def parse_tally_ledgers(file):
     rows = []
     for i, line in enumerate(lines):
         cells = [c.strip() for c in line.strip('\n').split(",")]
-        if cells[0].startswith("Ledger:"):
+        # Robust header detection
+        if cells and cells[0].startswith("Ledger:"):
             if current_ledger and headers and rows:
                 df = pd.DataFrame(rows, columns=headers)
                 ledgers[current_ledger] = df
@@ -45,17 +46,18 @@ def parse_tally_ledgers(file):
         if current_ledger and current_address is None and any(cells):
             current_address = cells[0]
             continue
-        if (cells[:7] == ['Date', 'Particulars', '', 'Vch Type', 'Vch No.', 'Debit', 'Credit'] or
-            cells[:6] == ['Date', 'Particulars', 'Vch Type', 'Vch No.', 'Debit', 'Credit']):
-            headers = [c for c in cells if c]
+        # Relaxed header detection: look for 'Date', 'Debit', 'Credit'
+        if "Date" in cells and "Debit" in cells and "Credit" in cells:
+            headers = [c.strip() for c in cells if c.strip()]
             rows = []
             continue
+        # Transaction row, only after header is detected
         if headers and (len([x for x in cells if x]) >= 5) and not (
-            cells[1] if len(cells) > 1 else "").startswith("Closing Balance"):
-            if cells[0] and cells[0][0].isdigit():
+            (cells[1] if len(cells) > 1 else "").startswith("Closing Balance")):
+            if cells[0] and (cells[0][0].isdigit() or cells[0][0] == '0'):
                 while len(cells) < len(headers):
                     cells.append("")
-                rows.append(cells[:len(headers)])
+                rows.append([c.strip() for c in cells[:len(headers)]])
     if current_ledger and headers and rows:
         df = pd.DataFrame(rows, columns=headers)
         ledgers[current_ledger] = df
@@ -77,6 +79,7 @@ def classify_sales_and_payments(df, credit_days=0):
         if pd.isna(date): continue
         if "OPENING" in particulars or "CLOSING" in particulars or "JOURNAL" in vtype:
             continue
+        # SALES: look for "SALES" in vtype or particulars, and credit > 0
         if credit > 0 and ("SALES" in vtype or "SALES" in particulars):
             sales.append({
                 "date": date,
@@ -86,6 +89,7 @@ def classify_sales_and_payments(df, credit_days=0):
                 "remaining": credit,
                 "payments": []
             })
+        # RECEIPT: look for "RECEIPT" in vtype or particulars, and debit > 0
         elif debit > 0 and ("RECEIPT" in vtype or "RECEIPT" in particulars):
             payments.append({
                 "date": date,
@@ -129,7 +133,7 @@ def weighted_days_late_calc(sales):
         })
         total_impact += total_per_invoice
         total_amount += sale['amount']
-    wdl = round(total_impact / total_amount, 2) if total_amount else 0.0
+    wdl = round(total_impact / total_amount, 2) if total_amount else np.nan
     return wdl, pd.DataFrame(per_invoice)
 
 # ----------- PDF REPORTS -----------
@@ -204,7 +208,6 @@ def make_detailed_pdf_full(df_per_invoice, ledger_name, credit_days, company_add
         elements.append(Paragraph(f"Address: {company_address}", styles['Normal']))
     elements.append(Paragraph(f"Credit Period Used: <b>{credit_days} days</b>", styles['Normal']))
     elements.append(Spacer(1, 15))
-    # Quarter Table
     quarter_table = make_quarter_table(df_per_invoice)
     if not quarter_table.empty:
         data = [["Quarter", "Weighted Days Late"]]
@@ -222,14 +225,12 @@ def make_detailed_pdf_full(df_per_invoice, ledger_name, credit_days, company_add
         elements.append(Paragraph("Quarter-wise Weighted Days Late:", styles["Heading3"]))
         elements.append(tbl)
         elements.append(Spacer(1, 15))
-        # Chart
         img_buf = plot_wdl_line_chart(quarter_table)
         elements.append(Paragraph("Weighted Days Late by Quarter (Chart):", styles["Heading3"]))
         elements.append(Image(img_buf, width=380, height=180))
         elements.append(Spacer(1, 20))
     else:
         elements.append(Paragraph("No sales/payment data for quarter table or chart.", styles["Normal"]))
-    # Per-Invoice Table
     elements.append(Paragraph("Per Invoice Weighted Days Late Table:", styles["Heading3"]))
     if not df_per_invoice.empty:
         data = [["Sale Date", "Invoice No", "Sale Amount", "Weighted Days Late"]]
@@ -281,6 +282,10 @@ if uploaded:
     summary_rows = []
     ledgerwise_per_invoice = {}
     for ledger_name, df in ledgers.items():
+        if df.empty or any(col not in df.columns for col in ["Date", "Particulars", "Vch Type", "Vch No.", "Debit", "Credit"]):
+            summary_rows.append({"Ledger": ledger_name, "Weighted Days Late": np.nan})
+            ledgerwise_per_invoice[ledger_name] = pd.DataFrame()
+            continue
         try:
             sales, payments = classify_sales_and_payments(df, credit_days)
             allocate_fifo(sales, payments)
@@ -288,7 +293,7 @@ if uploaded:
             summary_rows.append({"Ledger": ledger_name, "Weighted Days Late": wdl})
             ledgerwise_per_invoice[ledger_name] = per_inv
         except Exception as e:
-            summary_rows.append({"Ledger": ledger_name, "Weighted Days Late": float('nan')})
+            summary_rows.append({"Ledger": ledger_name, "Weighted Days Late": np.nan})
             ledgerwise_per_invoice[ledger_name] = pd.DataFrame()
     summary_table = pd.DataFrame(summary_rows)
     st.subheader("Summary: Weighted Days Late by Company/Ledger")
