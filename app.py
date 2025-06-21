@@ -5,9 +5,8 @@ from datetime import timedelta
 
 DATE_FMT = "%d-%b-%y"
 
-# ----------- ROBUST PARSE LEDGERS -----------
 def parse_tally_ledgers(file):
-    """Robustly parse Tally group export CSV into ledgers dict, correctly handling unnamed columns."""
+    """Parse Tally group export CSV into ledgers dict, handling unnamed columns."""
     if hasattr(file, "read"):
         file.seek(0)
         try:
@@ -27,7 +26,6 @@ def parse_tally_ledgers(file):
     for i, line in enumerate(lines):
         line = line.replace("\ufeff", "").rstrip('\n\r')
         cells = [c.strip() for c in line.split(",")]
-        # Ledger start
         if cells and cells[0].startswith("Ledger:"):
             if current_ledger and headers and rows:
                 df = pd.DataFrame(rows, columns=headers)
@@ -39,16 +37,13 @@ def parse_tally_ledgers(file):
             headers = None
             rows = []
             continue
-        # Address line
         if current_ledger and current_address is None and any(cells):
             current_address = cells[0]
             continue
-        # Header row - keep ALL columns, name blanks as Unnamed_{i}
         if any("Date" in c for c in cells) and "Debit" in cells and "Credit" in cells:
             headers = [c.strip() if c.strip() else f"Unnamed_{i}" for i, c in enumerate(cells)]
             rows = []
             continue
-        # Transaction row
         if headers and (len([x for x in cells if x]) >= 5) and not (
             (cells[1] if len(cells) > 1 else "").startswith("Closing Balance")):
             if cells[0] and (cells[0][0].isdigit() or cells[0][0] == '0'):
@@ -62,7 +57,6 @@ def parse_tally_ledgers(file):
         ledger_addresses[current_ledger] = current_address
     return ledgers, ledger_addresses
 
-# ----------- ANALYSIS -----------
 def classify_sales_and_payments(df, credit_days=0):
     sales = []
     payments = []
@@ -85,28 +79,25 @@ def classify_sales_and_payments(df, credit_days=0):
         vch_no_col = "Vch No."
     df["Parsed_Date"] = pd.to_datetime(df[date_col], dayfirst=True, errors="coerce")
     for _, row in df.iterrows():
-        vtype = str(row.get(vch_type_col, "")).upper()
         particulars = str(row.get(particulars_col, "")).upper()
-        sale_amt = float(str(row.get(debit_col, "")).replace(",", "") or 0)
-        pay_amt = float(str(row.get(credit_col, "")).replace(",", "") or 0)
+        debit = float(str(row.get(debit_col, "")).replace(",", "") or 0)
+        credit = float(str(row.get(credit_col, "")).replace(",", "") or 0)
         date = row.get("Parsed_Date")
         vch_no = str(row.get(vch_no_col, ""))
         if pd.isna(date): continue
-        if "OPENING" in particulars or "CLOSING" in particulars or "JOURNAL" in vtype:
-            continue
-        if ("SALES" in vtype or "SALES" in particulars) and sale_amt > 0:
+        if debit > 0:
             sales.append({
                 "date": date,
                 "vch_no": vch_no,
-                "amount": sale_amt,
+                "amount": debit,
                 "due_date": date + timedelta(days=credit_days),
-                "remaining": sale_amt,
+                "remaining": debit,
                 "payments": []
             })
-        elif ("RECEIPT" in vtype or "RECEIPT" in particulars) and pay_amt > 0:
+        elif credit > 0:
             payments.append({
                 "date": date,
-                "amount": pay_amt,
+                "amount": credit,
                 "vch_no": vch_no,
                 "particulars": particulars
             })
@@ -149,16 +140,15 @@ def weighted_days_late_calc(sales):
     wdl = round(total_impact / total_amount, 2) if total_amount else np.nan
     return wdl, pd.DataFrame(per_invoice)
 
-# ----------- STREAMLIT UI -----------
-
 st.set_page_config(page_title="Tally Ledger Weighted Days Late Analyzer", layout="wide")
 st.title("Tally Ledger Weighted Days Late Analyzer")
 
 st.markdown("""
 Upload a **full Tally ledger group CSV export**.<br>
-- Handles all unnamed (blank) columns in Tally export.<br>
-- Lets you set a credit period (0 = invoice date as due date, N = N days credit)<br>
-- Shows weighted days late for each ledger (summary table)<br>
+- Every credit (including receipts, credit notes, journals, etc) is treated as a payment.<br>
+- All debits are treated as sales.<br>
+- Lets you set a credit period (0 = invoice date as due date, N = N days credit).<br>
+- Shows weighted days late for each ledger (summary table).<br>
 - Lets you select any company/ledger for a detailed drilldown (per-invoice).<br>
 """, unsafe_allow_html=True)
 
