@@ -21,7 +21,18 @@ def parse_tally_ledgers(file):
         ledgers: dict {ledger_name: DataFrame}
         ledger_addresses: dict {ledger_name: address string}
     """
-    lines = [l.decode("utf-8") if isinstance(l, bytes) else l for l in file.readlines()]
+    # Read as text with fallback encoding for Tally/Excel files
+    if hasattr(file, "read"):
+        # Read entire file as text, detect encoding
+        file.seek(0)
+        try:
+            content = file.read().decode("utf-8")
+        except Exception:
+            file.seek(0)
+            content = file.read().decode("latin1")
+        lines = content.splitlines()
+    else:
+        lines = file.splitlines()
     ledgers = {}
     ledger_addresses = {}
     current_ledger = None
