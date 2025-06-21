@@ -17,22 +17,18 @@ from reportlab.lib.colors import HexColor
 # --- CONFIGURATION ---
 DATE_FMT = "%d-%b-%y"
 QUARTER_MONTHS = {1: "Apr–Jun", 2: "Jul–Sep", 3: "Oct–Dec", 4: "Jan–Mar"}
-
-# --- MODERN COLOR DEFINITIONS (THE FIX) ---
-# Define colors as simple strings first
 MODERN_BLUE_HEX = '#2a3f5f'
 LIGHT_GRAY_HEX = '#f0f4f7'
-# Convert them to ReportLab objects where needed, use strings directly for Matplotlib
 
-# --- HELPER & PARSING FUNCTIONS (No Changes Here) ---
+# --- HELPER & PARSING FUNCTIONS ---
 def get_fiscal_quarter_label(dt):
-    if pd.isna(dt): return "Invalid Date", None, None
+    if pd.isna(dt): return "Invalid Date", None, None, None
     year, month = dt.year, dt.month
-    if 4 <= month <= 6: quarter, fiscal_year = 1, year
-    elif 7 <= month <= 9: quarter, fiscal_year = 2, year
-    elif 10 <= month <= 12: quarter, fiscal_year = 3, year
-    else: quarter, fiscal_year = 4, year - 1
-    return f"{fiscal_year} Q{quarter} {QUARTER_MONTHS[quarter]}", fiscal_year, quarter
+    if 4 <= month <= 6: quarter, fiscal_year, sort_date = 1, year, pd.Timestamp(year, 4, 1)
+    elif 7 <= month <= 9: quarter, fiscal_year, sort_date = 2, year, pd.Timestamp(year, 7, 1)
+    elif 10 <= month <= 12: quarter, fiscal_year, sort_date = 3, year, pd.Timestamp(year, 10, 1)
+    else: quarter, fiscal_year, sort_date = 4, year - 1, pd.Timestamp(year, 1, 1)
+    return f"{fiscal_year} Q{quarter} {QUARTER_MONTHS[quarter]}", fiscal_year, quarter, sort_date
 
 def format_amount_lakhs(n):
     try:
@@ -73,7 +69,7 @@ def parse_tally_ledgers(file_content):
         ledger_addresses[current_ledger_name] = current_address
     return ledgers, ledger_addresses
 
-# --- CORE ANALYSIS LOGIC (No Changes Here) ---
+# --- CORE ANALYSIS LOGIC ---
 def classify_sales_and_payments_robust(df, credit_days=0):
     sales, payments = [], []
     df["Parsed_Date"] = pd.to_datetime(df["Date"], format=DATE_FMT, errors="coerce")
@@ -121,13 +117,13 @@ def analyze_ledger_performance(df, credit_days):
         if sale['amount'] == 0: continue
         invoice_weighted_impact = sum(payment['pay_amt'] * (payment['pay_date'] - sale['due_date']).days for payment in sale['payments'])
         weighted_days_for_invoice = invoice_weighted_impact / sale['amount'] if sale['amount'] > 0 else 0
-        q_label, f_year, f_q = get_fiscal_quarter_label(sale['date'])
+        q_label, f_year, f_q, q_sort_date = get_fiscal_quarter_label(sale['date'])
         invoice_details.append({
             "Sale_Date_DT": sale['date'], "Sale Date": sale['date'].strftime(DATE_FMT), "Invoice No": sale['vch_no'],
             "Sale Amount": sale['amount'], "Due Date": sale['due_date'].strftime(DATE_FMT),
             "Weighted Days Late": round(weighted_days_for_invoice, 2),
             "Amount Remaining": round(sale['remaining'], 2),
-            "Quarter Label": q_label, "Fiscal Year": f_year, "Fiscal Quarter": f_q
+            "Quarter Label": q_label, "Fiscal Year": f_year, "Fiscal Quarter": f_q, "Quarter Sort Date": q_sort_date
         })
         if sale['remaining'] < 0.01:
             total_weighted_impact += invoice_weighted_impact
@@ -135,18 +131,22 @@ def analyze_ledger_performance(df, credit_days):
     overall_wdl_paid_only = round(total_weighted_impact / total_sale_amount_paid, 2) if total_sale_amount_paid > 0 else 0
     if not invoice_details: return overall_wdl_paid_only, pd.DataFrame(), pd.DataFrame()
     details_df = pd.DataFrame(invoice_details)
+    
+    # --- THIS IS THE SORTING FIX ---
+    # Group by quarter and calculate aggregates
     quarterly_summary = details_df.groupby('Quarter Label').apply(
         lambda g: pd.Series({
             'Wtd Avg Days Late': np.average(g['Weighted Days Late'], weights=g['Sale Amount']),
-            'Total Sales': g['Sale Amount'].sum(), 'Invoices': len(g)
+            'Total Sales': g['Sale Amount'].sum(), 'Invoices': len(g),
+            'Sort_Date': g['Quarter Sort Date'].iloc[0] # Keep the first sort date for the group
         })
     ).reset_index()
-    q_labels_df = pd.DataFrame([get_fiscal_quarter_label(pd.to_datetime(s.split(' ')[0] + '-' + s.split(' ')[2].split('–')[0] + '-01', errors='coerce')) for s in quarterly_summary['Quarter Label']], columns=['label', 'Fiscal Year', 'Fiscal Quarter'])
-    quarterly_summary = pd.concat([quarterly_summary, q_labels_df], axis=1)
-    quarterly_summary = quarterly_summary.sort_values(['Fiscal Year', 'Fiscal Quarter']).drop(columns=['label', 'Fiscal Year', 'Fiscal Quarter'])
+    # Sort the entire summary by the chronological sort date
+    quarterly_summary = quarterly_summary.sort_values('Sort_Date').drop(columns=['Sort_Date'])
+    
     return overall_wdl_paid_only, details_df, quarterly_summary
 
-# --- PDF GENERATION FUNCTIONS (WITH PROFESSIONAL STYLING) ---
+# --- PDF GENERATION FUNCTIONS ---
 def generate_summary_pdf(summary_data, credit_days):
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=LETTER, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=72)
@@ -207,7 +207,7 @@ def generate_detailed_pdf(ledger_name, grand_wdl, qtr_df, details_df, credit_day
         elements.append(Image(chart_path, width=540, height=270, hAlign='CENTER'))
         elements.append(Spacer(1, 24))
     details_df_sorted = details_df.sort_values(by="Sale_Date_DT")
-    for q_label in qtr_df['Quarter Label']:
+    for q_label in qtr_df['Quarter Label']: # This loop now respects the new sort order of qtr_df
         q_wdl = qtr_df[qtr_df['Quarter Label'] == q_label]['Wtd Avg Days Late'].iloc[0]
         elements.append(Paragraph(f"{q_label}: Weighted Avg Days Late = {q_wdl:.2f}", styles['LeftH3']))
         q_invoices = details_df_sorted[details_df_sorted['Quarter Label'] == q_label]
@@ -286,10 +286,9 @@ if uploaded_file:
             qtr_display_df = qtr_df.copy()
             qtr_display_df['Wtd Avg Days Late'] = qtr_display_df['Wtd Avg Days Late'].map('{:,.2f}'.format)
             qtr_display_df['Total Sales'] = qtr_display_df['Total Sales'].apply(format_amount_lakhs)
-            st.table(qtr_display_df)
+            st.table(qtr_display_df) # This table will now be in the correct order
             fig, ax = plt.subplots(figsize=(10, 4))
             chart_df = details_df.sort_values(by="Sale_Date_DT")
-            # THIS IS THE FIX: Use the hex string directly for Matplotlib
             ax.plot(chart_df["Sale_Date_DT"], chart_df["Weighted Days Late"], marker='o', linestyle='-', markersize=4, color=MODERN_BLUE_HEX)
             ax.set_title(f"WADL Over Time for {selected_ledger}")
             ax.set_xlabel("Sale Date")
@@ -298,11 +297,11 @@ if uploaded_file:
             st.pyplot(fig)
             st.markdown("##### Invoice-by-Invoice Details (Grouped by Quarter)")
             details_df_sorted = details_df.sort_values(by="Sale_Date_DT")
-            for q_label in qtr_df['Quarter Label']:
+            for q_label in qtr_df['Quarter Label']: # This loop now respects the new sort order
                 q_wdl_val = qtr_df[qtr_df['Quarter Label'] == q_label]['Wtd Avg Days Late'].iloc[0]
                 with st.expander(f"**{q_label}** (WDL: {q_wdl_val:.2f})"):
                     q_invoices = details_df_sorted[details_df_sorted['Quarter Label'] == q_label]
-                    st.dataframe(q_invoices.drop(columns=['Sale_Date_DT', 'Quarter Label', 'Fiscal Year', 'Fiscal Quarter']), use_container_width=True)
+                    st.dataframe(q_invoices.drop(columns=['Sale_Date_DT', 'Quarter Label', 'Fiscal Year', 'Fiscal Quarter', 'Quarter Sort Date']), use_container_width=True)
             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
                 fig.savefig(tmpfile.name, bbox_inches='tight', dpi=300)
                 detailed_pdf_buffer = generate_detailed_pdf(selected_ledger, grand_wdl, qtr_df, details_df, credit_days, tmpfile.name)
