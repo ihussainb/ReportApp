@@ -118,23 +118,17 @@ class AnalysisEngine:
         invoice_details = []
         for sale in sales:
             if sale['amount'] == 0: continue
-            
-            # --- THIS IS THE NEW "SANITY CHECK" LOGIC ---
             invoice_weighted_impact = 0
             for payment in sale['payments']:
-                # A payment cannot be made before the invoice exists.
-                # The effective date for calculation is the LATER of the payment date or the sale date.
                 effective_payment_date = max(payment['pay_date'], sale['date'])
                 days_late = (effective_payment_date - sale['due_date']).days
                 invoice_weighted_impact += payment['pay_amt'] * days_late
-            # --- END OF NEW LOGIC ---
-
             weighted_days_for_invoice = invoice_weighted_impact / sale['amount'] if sale['amount'] > 0 else 0
             q_label, f_year, f_q, q_sort_date = self.get_fiscal_quarter_label(sale['date'])
             invoice_details.append({
                 "Sale_Date_DT": sale['date'], "Sale Date": sale['date'].strftime(DATE_FMT), "Invoice No": sale['vch_no'],
                 "Sale Amount": sale['amount'], "Due Date": sale['due_date'].strftime(DATE_FMT),
-                "Weighted Days Late": round(weighted_days_for_invoice, 2),
+                "Weighted Days Late": round(weighted_days_for_invoice, 1), # FORMATTING FIX
                 "Amount Remaining": round(sale['remaining'], 2),
                 "Quarter Label": q_label, "Fiscal Year": f_year, "Fiscal Quarter": f_q, "Quarter Sort Date": q_sort_date
             })
@@ -142,7 +136,7 @@ class AnalysisEngine:
         details_df = pd.DataFrame(invoice_details)
         total_sale_amount = details_df['Sale Amount'].sum()
         total_weighted_impact = (details_df['Weighted Days Late'] * details_df['Sale Amount']).sum()
-        grand_wdl = round(total_weighted_impact / total_sale_amount, 2) if total_sale_amount > 0 else 0
+        grand_wdl = round(total_weighted_impact / total_sale_amount, 1) if total_sale_amount > 0 else 0 # FORMATTING FIX
         quarterly_summary = details_df.groupby('Quarter Label').apply(
             lambda g: pd.Series({
                 'Wtd Avg Days Late': np.average(g['Weighted Days Late'], weights=g['Sale Amount']),
@@ -167,12 +161,9 @@ class PdfGenerator:
     def _get_wadl_color(self, wadl_val):
         if not isinstance(wadl_val, (int, float)):
             return self.font_dark
-        if wadl_val <= 30:
-            return colors.green
-        elif 30 < wadl_val <= 60:
-            return colors.orange
-        else:
-            return colors.red
+        if wadl_val <= 30: return colors.green
+        elif 30 < wadl_val <= 60: return colors.orange
+        else: return colors.red
 
     def format_amount_lakhs(self, n):
         try:
@@ -192,7 +183,6 @@ class PdfGenerator:
         elements.append(Spacer(1, 6))
         elements.append(Paragraph(f"Based on a Credit Period of {credit_days} Days", styles['CenterH3']))
         elements.append(Spacer(1, 24))
-        
         table_data = [["Company / Ledger", "Grand WADL (All Invoices)"]]
         table_styles = [
             ('BACKGROUND', (0,0), (-1,0), self.primary_color), ('TEXTCOLOR',(0,0),(-1,0), self.font_light),
@@ -201,15 +191,13 @@ class PdfGenerator:
             ('BOTTOMPADDING', (0,0), (-1,0), 12), ('TOPPADDING', (0,0), (-1,0), 12),
             ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.white, self.secondary_color]), ('GRID', (0,0), (-1,-1), 1, self.grid_color)
         ]
-
         for i, item in enumerate(summary_data):
             row_index = i + 1
             wadl_val = item['WADL']
-            wadl_text = f"{wadl_val:.2f}" if isinstance(wadl_val, (int, float)) else wadl_val
+            wadl_text = f"{wadl_val:.1f}" if isinstance(wadl_val, (int, float)) else wadl_val # FORMATTING FIX
             table_data.append([item["Company / Ledger"], wadl_text])
             wadl_color = self._get_wadl_color(wadl_val)
             table_styles.append(('TEXTCOLOR', (1, row_index), (1, row_index), wadl_color))
-
         summary_table = Table(table_data, colWidths=[350, 150], hAlign='CENTER')
         summary_table.setStyle(TableStyle(table_styles))
         elements.append(summary_table)
@@ -231,9 +219,8 @@ class PdfGenerator:
         elements.append(Spacer(1, 6))
         elements.append(Paragraph(f"By Fiscal Year — {credit_days} Days Credit Period", styles['CenterH3']))
         elements.append(Spacer(1, 12))
-        elements.append(Paragraph(f"Grand Weighted Avg Days Late: <b>{grand_wdl:.2f}</b>", styles['CenterH2']))
+        elements.append(Paragraph(f"Grand Weighted Avg Days Late: <b>{grand_wdl:.1f}</b>", styles['CenterH2'])) # FORMATTING FIX
         elements.append(Spacer(1, 24))
-        
         qtr_table_data = [["Quarter", "Wtd Avg Days Late", "Total Sales", "Invoices"]]
         qtr_table_styles = [
             ('BACKGROUND', (0,0), (-1,0), self.primary_color), ('TEXTCOLOR',(0,0),(-1,0), self.font_light),
@@ -245,10 +232,9 @@ class PdfGenerator:
         for i, row in qtr_df.iterrows():
             row_index = i + 1
             wadl_val = row['Wtd Avg Days Late']
-            qtr_table_data.append([row["Quarter Label"], f"{wadl_val:.2f}", self.format_amount_lakhs(row['Total Sales']), int(row['Invoices'])])
+            qtr_table_data.append([row["Quarter Label"], f"{wadl_val:.1f}", self.format_amount_lakhs(row['Total Sales']), int(row['Invoices'])]) # FORMATTING FIX
             wadl_color = self._get_wadl_color(wadl_val)
             qtr_table_styles.append(('TEXTCOLOR', (1, row_index), (1, row_index), wadl_color))
-
         qtr_summary_table = Table(qtr_table_data, colWidths=[170, 150, 120, 80], hAlign='CENTER')
         qtr_summary_table.setStyle(TableStyle(qtr_table_styles))
         elements.append(qtr_summary_table)
@@ -259,11 +245,11 @@ class PdfGenerator:
         details_df_sorted = details_df.sort_values(by="Sale_Date_DT")
         for q_label in qtr_df['Quarter Label']:
             q_wdl = qtr_df[qtr_df['Quarter Label'] == q_label]['Wtd Avg Days Late'].iloc[0]
-            elements.append(Paragraph(f"{q_label}: Weighted Avg Days Late = {q_wdl:.2f}", styles['LeftH3']))
+            elements.append(Paragraph(f"{q_label}: Weighted Avg Days Late = {q_wdl:.1f}", styles['LeftH3'])) # FORMATTING FIX
             q_invoices = details_df_sorted[details_df_sorted['Quarter Label'] == q_label]
             invoice_data = [["Sale Date", "Invoice No", "Sale Amount", "Wtd Days Late", "Amount Remaining"]]
             for _, row in q_invoices.iterrows():
-                invoice_data.append([row["Sale Date"], row["Invoice No"], f"{row['Sale Amount']:,.2f}", f"{row['Weighted Days Late']:.2f}", f"{row['Amount Remaining']:,.2f}"])
+                invoice_data.append([row["Sale Date"], row["Invoice No"], f"{row['Sale Amount']:,.2f}", f"{row['Weighted Days Late']:.1f}", f"{row['Amount Remaining']:,.2f}"]) # FORMATTING FIX
             invoice_table = Table(invoice_data, colWidths=[90, 140, 110, 110, 120])
             invoice_table.setStyle(TableStyle([
                 ('BACKGROUND', (0,0), (-1,0), self.primary_color), ('TEXTCOLOR',(0,0),(-1,0), self.font_light),
@@ -329,11 +315,13 @@ def main():
         with col1:
             st.markdown("#### ✅ Top 5 Best Paying Customers")
             best_df = numeric_summary_df.sort_values(by="WADL", ascending=True).head(5)
-            st.dataframe(best_df.style.applymap(style_wadl, subset=['WADL']), use_container_width=True)
+            # FORMATTING FIX
+            st.dataframe(best_df.style.applymap(style_wadl, subset=['WADL']).format({'WADL': '{:.1f}'}), use_container_width=True)
         with col2:
             st.markdown("#### 🚨 Top 5 Worst Paying Customers")
             worst_df = numeric_summary_df.sort_values(by="WADL", ascending=False).head(5)
-            st.dataframe(worst_df.style.applymap(style_wadl, subset=['WADL']), use_container_width=True)
+            # FORMATTING FIX
+            st.dataframe(worst_df.style.applymap(style_wadl, subset=['WADL']).format({'WADL': '{:.1f}'}), use_container_width=True)
 
         st.divider()
         
@@ -353,7 +341,8 @@ def main():
                 (pd.to_numeric(summary_df['WADL'], errors='coerce') >= wadl_range[0]) &
                 (pd.to_numeric(summary_df['WADL'], errors='coerce') <= wadl_range[1])
             ]
-            st.dataframe(filtered_df.style.applymap(style_wadl, subset=['WADL']), use_container_width=True)
+            # FORMATTING FIX
+            st.dataframe(filtered_df.style.applymap(style_wadl, subset=['WADL']).format({'WADL': '{:.1f}'}), use_container_width=True)
         else:
             st.dataframe(summary_df)
 
@@ -377,12 +366,16 @@ def main():
             if not details_df.empty:
                 with st.container():
                     st.subheader(f"Detailed Report for: {selected_ledger}")
-                    st.markdown(f"**Grand Weighted Avg Days Late: {grand_wdl:.2f}**")
+                    # FORMATTING FIX
+                    st.markdown(f"**Grand Weighted Avg Days Late: {grand_wdl:.1f}**")
+                    
                     st.markdown("##### Quarterly Performance Summary")
                     qtr_display_df = qtr_df.copy()
-                    qtr_display_df['Wtd Avg Days Late'] = qtr_display_df['Wtd Avg Days Late'].map('{:,.2f}'.format)
+                    # FORMATTING FIX
+                    qtr_display_df['Wtd Avg Days Late'] = qtr_display_df['Wtd Avg Days Late'].map('{:,.1f}'.format)
                     qtr_display_df['Total Sales'] = qtr_display_df['Total Sales'].apply(pdf_creator.format_amount_lakhs)
                     st.table(qtr_display_df)
+                    
                     fig, ax = plt.subplots(figsize=(10, 4))
                     chart_df = details_df.sort_values(by="Sale_Date_DT")
                     ax.plot(chart_df["Sale_Date_DT"], chart_df["Weighted Days Late"], marker='o', linestyle='-', markersize=4, color=MODERN_BLUE_HEX)
@@ -391,6 +384,7 @@ def main():
                     ax.set_ylabel("Weighted Days Late")
                     plt.grid(True, linestyle='--', alpha=0.6)
                     st.pyplot(fig)
+                    
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
                         fig.savefig(tmpfile.name, bbox_inches='tight', dpi=300)
                         detailed_pdf_buffer = pdf_creator.generate_detailed_pdf(selected_ledger, grand_wdl, qtr_df, details_df, credit_days, tmpfile.name)
