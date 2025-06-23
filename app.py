@@ -32,16 +32,15 @@ LIGHT_GRAY_HEX = '#f0f4f7'
 # ==============================================================================
 @st.cache_data
 def parse_tally_ledgers(file_content):
-    """
-    Parses a Tally multi-ledger export text into a dictionary of DataFrames.
-    This version is stable and designed for the standard multi-ledger export.
-    """
     ledgers, ledger_addresses = {}, {}
     current_ledger_rows, current_ledger_name, current_address, headers = [], None, None, None
     lines = file_content.splitlines()
-    for line in lines:
+    first_ledger_name_found = False
+
+    for i, line in enumerate(lines):
         line = line.replace("\ufeff", "").strip()
         cells = [cell.strip() for cell in line.split(',')]
+        
         if line.startswith("Ledger:"):
             if current_ledger_name and headers and current_ledger_rows:
                 df = pd.DataFrame(current_ledger_rows, columns=headers)
@@ -49,22 +48,30 @@ def parse_tally_ledgers(file_content):
                 ledger_addresses[current_ledger_name] = current_address
             current_ledger_name = cells[1].strip() if len(cells) > 1 else "Unknown"
             current_address, headers, current_ledger_rows = None, None, []
+            first_ledger_name_found = True
             continue
-        if current_ledger_name and current_address is None and headers is None and any(cells):
-            if not any(c in line for c in ["Date", "Particulars", "Debit", "Credit"]):
-                 current_address = cells[0]
-                 continue
+
+        if not first_ledger_name_found and "Ledger Account" in line:
+            if i + 1 < len(lines):
+                name_cells = [cell.strip() for cell in lines[i+1].split(',')]
+                if name_cells and name_cells[0]:
+                    current_ledger_name = name_cells[0]
+                    first_ledger_name_found = True
+            continue
+
         if "Date" in cells and "Particulars" in cells and "Debit" in cells and "Credit" in cells:
             headers = [h.strip() if h.strip() else f"Unnamed_{i}" for i, h in enumerate(cells)]
             continue
+            
         if headers and len(cells) >= 4 and not (cells[1] if len(cells) > 1 else "").strip().startswith("Closing Balance"):
             while len(cells) < len(headers): cells.append("")
             current_ledger_rows.append(cells)
-    # Final save after the loop for the last ledger in the file
+
     if current_ledger_name and headers and current_ledger_rows:
         df = pd.DataFrame(current_ledger_rows, columns=headers)
         ledgers[current_ledger_name] = df
         ledger_addresses[current_ledger_name] = current_address
+        
     return ledgers, ledger_addresses
 
 # ==============================================================================
@@ -169,12 +176,19 @@ class AnalysisEngine:
         open_invoices = df[df['Amount Remaining'] > 0]
         if len(paid_invoices) < 10 or len(open_invoices) == 0:
             return pd.DataFrame()
+        
+        # --- THIS IS THE FIX ---
+        # Check if the training data has both "Late" and "On-Time" examples
+        if len(paid_invoices['Is_Late'].unique()) < 2:
+            return pd.DataFrame() # Not enough classes to train, return empty
+
         features = ['Amount_Normalized', 'Month', 'Day_of_Week']
         X = paid_invoices[features]
         y = paid_invoices['Is_Late']
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        
         model = LogisticRegression(class_weight='balanced')
-        model.fit(X_train, y_train)
+        model.fit(X, y) # We can train on the full paid history
+        
         X_open = open_invoices[features]
         risk_probabilities = model.predict_proba(X_open)[:, 1]
         risk_report = open_invoices[['Sale Date', 'Invoice No', 'Sale Amount', 'Due Date']].copy()
