@@ -88,6 +88,8 @@ def classify_sales_and_payments_robust(df, credit_days=0):
         if "CREDIT NOTE" in vch_type and credit_amt > 0:
             payments.append({"date": row["Parsed_Date"], "amount": credit_amt, "vch_no": row["Vch No."]})
             continue
+        if "JOURNAL" in vch_type: # Explicitly ignore Journal Vouchers
+            continue
         if debit_amt > 0:
             sales.append({"date": row["Parsed_Date"], "vch_no": row["Vch No."], "amount": debit_amt, "due_date": row["Parsed_Date"] + timedelta(days=credit_days), "remaining": debit_amt, "payments": []})
         elif credit_amt > 0:
@@ -114,7 +116,6 @@ def analyze_ledger_performance(df, credit_days):
     sales, payments = classify_sales_and_payments_robust(df, credit_days)
     if not sales: return 0, pd.DataFrame(), pd.DataFrame()
     allocate_payments_fifo(sales, payments)
-    
     invoice_details = []
     for sale in sales:
         if sale['amount'] == 0: continue
@@ -128,18 +129,11 @@ def analyze_ledger_performance(df, credit_days):
             "Amount Remaining": round(sale['remaining'], 2),
             "Quarter Label": q_label, "Fiscal Year": f_year, "Fiscal Quarter": f_q, "Quarter Sort Date": q_sort_date
         })
-        
     if not invoice_details: return 0, pd.DataFrame(), pd.DataFrame()
-    
     details_df = pd.DataFrame(invoice_details)
-    
-    # --- THIS IS THE CORRECTED CALCULATION LOGIC ---
-    # 1. Calculate Grand WADL from ALL invoices, matching the original report
     total_sale_amount = details_df['Sale Amount'].sum()
     total_weighted_impact = (details_df['Weighted Days Late'] * details_df['Sale Amount']).sum()
     grand_wdl = round(total_weighted_impact / total_sale_amount, 2) if total_sale_amount > 0 else 0
-
-    # 2. Calculate Quarterly summary, which is already correct
     quarterly_summary = details_df.groupby('Quarter Label').apply(
         lambda g: pd.Series({
             'Wtd Avg Days Late': np.average(g['Weighted Days Late'], weights=g['Sale Amount']),
@@ -148,7 +142,6 @@ def analyze_ledger_performance(df, credit_days):
         })
     ).reset_index()
     quarterly_summary = quarterly_summary.sort_values('Sort_Date').drop(columns=['Sort_Date'])
-    
     return grand_wdl, details_df, quarterly_summary
 
 # --- PDF GENERATION FUNCTIONS ---
@@ -193,7 +186,6 @@ def generate_detailed_pdf(ledger_name, grand_wdl, qtr_df, details_df, credit_day
     elements.append(Spacer(1, 6))
     elements.append(Paragraph(f"By Fiscal Year — {credit_days} Days Credit Period", styles['CenterH3']))
     elements.append(Spacer(1, 12))
-    # Removed "(Paid Invoices Only)" from the Grand WADL title
     elements.append(Paragraph(f"Grand Weighted Avg Days Late: <b>{grand_wdl:.2f}</b>", styles['CenterH2']))
     elements.append(Spacer(1, 24))
     qtr_table_data = [["Quarter", "Wtd Avg Days Late", "Total Sales", "Invoices"]]
@@ -287,7 +279,6 @@ if uploaded_file:
             st.subheader(f"Ledger - {selected_ledger}")
             st.markdown(f"**Weighted Avg Days Late & Quarterly Sales Report**")
             st.markdown(f"By Fiscal Year — {credit_days} Days Credit Period")
-            # Removed "(Paid Invoices Only)" from the Grand WADL title
             st.markdown(f"#### Grand Weighted Avg Days Late: {grand_wdl:.2f}")
             st.markdown("##### Quarterly Performance Summary")
             qtr_display_df = qtr_df.copy()
@@ -309,6 +300,7 @@ if uploaded_file:
                 with st.expander(f"**{q_label}** (WDL: {q_wdl_val:.2f})"):
                     q_invoices = details_df_sorted[details_df_sorted['Quarter Label'] == q_label]
                     st.dataframe(q_invoices.drop(columns=['Sale_Date_DT', 'Quarter Label', 'Fiscal Year', 'Fiscal Quarter', 'Quarter Sort Date']), use_container_width=True)
+            
             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
                 fig.savefig(tmpfile.name, bbox_inches='tight', dpi=300)
                 detailed_pdf_buffer = generate_detailed_pdf(selected_ledger, grand_wdl, qtr_df, details_df, credit_days, tmpfile.name)
