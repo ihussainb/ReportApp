@@ -28,54 +28,35 @@ MODERN_BLUE_HEX = '#2a3f5f'
 LIGHT_GRAY_HEX = '#f0f4f7'
 
 # ==============================================================================
-# --- DATA PARSING (WITH THE FIX FOR SINGLE-LEDGER FILES) ---
+# --- DATA PARSING ---
 # ==============================================================================
 @st.cache_data
 def parse_tally_ledgers(file_content):
-    """
-    Parses a Tally export text (both single and multi-ledger) into a dictionary of DataFrames.
-    """
     ledgers, ledger_addresses = {}, {}
     current_ledger_rows, current_ledger_name, current_address, headers = [], None, None, None
     lines = file_content.splitlines()
+    first_ledger_name_found = False
 
-    # --- THIS IS THE FIX: Find the first ledger name outside the loop ---
-    # This handles files that don't start with "Ledger:" but contain the data for one.
     for i, line in enumerate(lines):
-        if "Ledger Account" in line:
-            # The ledger name is often on the line below "Ledger Account"
-            if i + 1 < len(lines):
-                cells = [cell.strip() for cell in lines[i+1].split(',')]
-                if cells[0]: # Check if the cell is not empty
-                    current_ledger_name = cells[0]
-                    # The address is often on the line after the name
-                    if i + 2 < len(lines):
-                        addr_cells = [cell.strip() for cell in lines[i+2].split(',')]
-                        if addr_cells[0]:
-                            current_address = addr_cells[0]
-                    break # Exit after finding the first ledger info
-
-    for line in lines:
         line = line.replace("\ufeff", "").strip()
         cells = [cell.strip() for cell in line.split(',')]
         
-        # This part handles multi-ledger files
         if line.startswith("Ledger:"):
             if current_ledger_name and headers and current_ledger_rows:
                 df = pd.DataFrame(current_ledger_rows, columns=headers)
                 ledgers[current_ledger_name] = df
                 ledger_addresses[current_ledger_name] = current_address
-            
             current_ledger_name = cells[1].strip() if len(cells) > 1 else "Unknown"
             current_address, headers, current_ledger_rows = None, None, []
-            
-            # Try to grab address from the next line
-            # This is a heuristic and might need adjustment based on file variations
-            next_line_index = lines.index(line) + 1
-            if next_line_index < len(lines):
-                next_line_cells = [c.strip() for c in lines[next_line_index].split(',')]
-                if next_line_cells and not any(h in next_line_cells for h in ["Date", "Particulars"]):
-                    current_address = next_line_cells[0]
+            first_ledger_name_found = True
+            continue
+
+        if not first_ledger_name_found and "Ledger Account" in line:
+            if i + 1 < len(lines):
+                name_cells = [cell.strip() for cell in lines[i+1].split(',')]
+                if name_cells and name_cells[0]:
+                    current_ledger_name = name_cells[0]
+                    first_ledger_name_found = True
             continue
 
         if "Date" in cells and "Particulars" in cells and "Debit" in cells and "Credit" in cells:
@@ -86,8 +67,6 @@ def parse_tally_ledgers(file_content):
             while len(cells) < len(headers): cells.append("")
             current_ledger_rows.append(cells)
 
-    # --- THIS IS THE CRITICAL FIX ---
-    # After the loop, save the last (or only) ledger's data
     if current_ledger_name and headers and current_ledger_rows:
         df = pd.DataFrame(current_ledger_rows, columns=headers)
         ledgers[current_ledger_name] = df
@@ -391,19 +370,27 @@ def main():
         st.header("Overall Summary of All Ledgers")
         st.markdown(f"**Credit Period Set To:** {credit_days} Days")
 
-        if not numeric_summary_df.empty:
+        # --- THIS IS THE FIX FOR THE SLIDER ---
+        if not numeric_summary_df.empty and len(numeric_summary_df) > 1:
             min_wadl = float(numeric_summary_df['WADL'].min())
             max_wadl = float(numeric_summary_df['WADL'].max())
-            wadl_range = st.slider(
-                'Filter by WADL Range:', min_value=min_wadl, max_value=max_wadl, value=(min_wadl, max_wadl)
-            )
-            filtered_df = summary_df[
-                (pd.to_numeric(summary_df['WADL'], errors='coerce') >= wadl_range[0]) &
-                (pd.to_numeric(summary_df['WADL'], errors='coerce') <= wadl_range[1])
-            ]
-            st.dataframe(filtered_df.style.applymap(style_wadl, subset=['WADL']).format({'WADL': '{:.1f}'}), use_container_width=True)
+            
+            # Ensure min_value is strictly less than max_value
+            if min_wadl < max_wadl:
+                wadl_range = st.slider(
+                    'Filter by WADL Range:', min_value=min_wadl, max_value=max_wadl, value=(min_wadl, max_wadl)
+                )
+                filtered_df = summary_df[
+                    (pd.to_numeric(summary_df['WADL'], errors='coerce') >= wadl_range[0]) &
+                    (pd.to_numeric(summary_df['WADL'], errors='coerce') <= wadl_range[1])
+                ]
+                st.dataframe(filtered_df.style.applymap(style_wadl, subset=['WADL']).format({'WADL': '{:.1f}'}), use_container_width=True)
+            else:
+                # If min and max are the same, just show the full table without the slider
+                st.dataframe(summary_df.style.applymap(style_wadl, subset=['WADL']).format({'WADL': '{:.1f}'}), use_container_width=True)
         else:
-            st.dataframe(summary_df)
+            # Show the full table if there's only one or zero customers
+            st.dataframe(summary_df.style.applymap(style_wadl, subset=['WADL']).format({'WADL': '{:.1f}'}), use_container_width=True)
 
         summary_pdf_buffer = pdf_creator.generate_summary_pdf(summary_df.to_dict('records'), credit_days)
         st.download_button(
@@ -415,7 +402,7 @@ def main():
 
         st.header("In-depth Analysis per Company")
         all_ledgers = list(ledgers.keys())
-        selected_ledgers = st.multiselect("Search and select one or more companies for a detailed report:", options=all_ledgers)
+        selected_ledgers = st.multiselect("Search and select one or more companies for a detailed report:", options=all_ledgers, default=all_ledgers[0] if all_ledgers else [])
 
         for selected_ledger in selected_ledgers:
             grand_wdl = next((item['WADL'] for item in summary_data if item['Company / Ledger'] == selected_ledger), 0)
