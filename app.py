@@ -6,11 +6,6 @@ from io import BytesIO
 import tempfile
 import matplotlib.pyplot as plt
 
-# --- NEW ML LIBRARY ---
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-
 # --- PDF & Charting Libraries ---
 from reportlab.lib.pagesizes import LETTER, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
@@ -35,12 +30,9 @@ def parse_tally_ledgers(file_content):
     ledgers, ledger_addresses = {}, {}
     current_ledger_rows, current_ledger_name, current_address, headers = [], None, None, None
     lines = file_content.splitlines()
-    first_ledger_name_found = False
-
-    for i, line in enumerate(lines):
+    for line in lines:
         line = line.replace("\ufeff", "").strip()
         cells = [cell.strip() for cell in line.split(',')]
-        
         if line.startswith("Ledger:"):
             if current_ledger_name and headers and current_ledger_rows:
                 df = pd.DataFrame(current_ledger_rows, columns=headers)
@@ -48,30 +40,21 @@ def parse_tally_ledgers(file_content):
                 ledger_addresses[current_ledger_name] = current_address
             current_ledger_name = cells[1].strip() if len(cells) > 1 else "Unknown"
             current_address, headers, current_ledger_rows = None, None, []
-            first_ledger_name_found = True
             continue
-
-        if not first_ledger_name_found and "Ledger Account" in line:
-            if i + 1 < len(lines):
-                name_cells = [cell.strip() for cell in lines[i+1].split(',')]
-                if name_cells and name_cells[0]:
-                    current_ledger_name = name_cells[0]
-                    first_ledger_name_found = True
-            continue
-
+        if current_ledger_name and current_address is None and headers is None and any(cells):
+            if not any(c in line for c in ["Date", "Particulars", "Debit", "Credit"]):
+                 current_address = cells[0]
+                 continue
         if "Date" in cells and "Particulars" in cells and "Debit" in cells and "Credit" in cells:
             headers = [h.strip() if h.strip() else f"Unnamed_{i}" for i, h in enumerate(cells)]
             continue
-            
         if headers and len(cells) >= 4 and not (cells[1] if len(cells) > 1 else "").strip().startswith("Closing Balance"):
             while len(cells) < len(headers): cells.append("")
             current_ledger_rows.append(cells)
-
     if current_ledger_name and headers and current_ledger_rows:
         df = pd.DataFrame(current_ledger_rows, columns=headers)
         ledgers[current_ledger_name] = df
         ledger_addresses[current_ledger_name] = current_address
-        
     return ledgers, ledger_addresses
 
 # ==============================================================================
@@ -130,7 +113,7 @@ class AnalysisEngine:
 
     def run_full_analysis(self, df, credit_days):
         sales, payments = self.classify_sales_and_payments_robust(df, credit_days)
-        if not sales: return 0, pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        if not sales: return 0, pd.DataFrame(), pd.DataFrame()
         self.allocate_payments_fifo(sales, payments)
         invoice_details = []
         for sale in sales:
@@ -145,15 +128,15 @@ class AnalysisEngine:
             invoice_details.append({
                 "Sale_Date_DT": sale['date'], "Sale Date": sale['date'].strftime(DATE_FMT), "Invoice No": sale['vch_no'],
                 "Sale Amount": sale['amount'], "Due Date": sale['due_date'].strftime(DATE_FMT),
-                "Weighted Days Late": round(weighted_days_for_invoice, 1),
+                "Weighted Days Late": round(weighted_days_for_invoice, 1), # FORMATTING FIX
                 "Amount Remaining": round(sale['remaining'], 2),
                 "Quarter Label": q_label, "Fiscal Year": f_year, "Fiscal Quarter": f_q, "Quarter Sort Date": q_sort_date
             })
-        if not invoice_details: return 0, pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        if not invoice_details: return 0, pd.DataFrame(), pd.DataFrame()
         details_df = pd.DataFrame(invoice_details)
         total_sale_amount = details_df['Sale Amount'].sum()
         total_weighted_impact = (details_df['Weighted Days Late'] * details_df['Sale Amount']).sum()
-        grand_wdl = round(total_weighted_impact / total_sale_amount, 1) if total_sale_amount > 0 else 0
+        grand_wdl = round(total_weighted_impact / total_sale_amount, 1) if total_sale_amount > 0 else 0 # FORMATTING FIX
         quarterly_summary = details_df.groupby('Quarter Label').apply(
             lambda g: pd.Series({
                 'Wtd Avg Days Late': np.average(g['Weighted Days Late'], weights=g['Sale Amount']),
@@ -162,38 +145,7 @@ class AnalysisEngine:
             })
         ).reset_index()
         quarterly_summary = quarterly_summary.sort_values('Sort_Date').drop(columns=['Sort_Date'])
-        risk_predictions_df = self.predict_late_payment_risk(details_df, credit_days)
-        return grand_wdl, details_df, quarterly_summary, risk_predictions_df
-
-    def predict_late_payment_risk(self, details_df, credit_days):
-        if details_df.empty: return pd.DataFrame()
-        df = details_df.copy()
-        df['Is_Late'] = (df['Weighted Days Late'] > credit_days).astype(int)
-        df['Month'] = df['Sale_Date_DT'].dt.month
-        df['Day_of_Week'] = df['Sale_Date_DT'].dt.dayofweek
-        df['Amount_Normalized'] = StandardScaler().fit_transform(df[['Sale Amount']])
-        paid_invoices = df[df['Amount Remaining'] == 0]
-        open_invoices = df[df['Amount Remaining'] > 0]
-        if len(paid_invoices) < 10 or len(open_invoices) == 0:
-            return pd.DataFrame()
-        
-        # --- THIS IS THE FIX ---
-        # Check if the training data has both "Late" and "On-Time" examples
-        if len(paid_invoices['Is_Late'].unique()) < 2:
-            return pd.DataFrame() # Not enough classes to train, return empty
-
-        features = ['Amount_Normalized', 'Month', 'Day_of_Week']
-        X = paid_invoices[features]
-        y = paid_invoices['Is_Late']
-        
-        model = LogisticRegression(class_weight='balanced')
-        model.fit(X, y) # We can train on the full paid history
-        
-        X_open = open_invoices[features]
-        risk_probabilities = model.predict_proba(X_open)[:, 1]
-        risk_report = open_invoices[['Sale Date', 'Invoice No', 'Sale Amount', 'Due Date']].copy()
-        risk_report['Risk Score (%)'] = (risk_probabilities * 100).round(1)
-        return risk_report.sort_values(by='Risk Score (%)', ascending=False)
+        return grand_wdl, details_df, quarterly_summary
 
 # ==============================================================================
 # --- PDF GENERATION ---
@@ -205,17 +157,21 @@ class PdfGenerator:
         self.font_light = colors.whitesmoke
         self.font_dark = colors.darkslategray
         self.grid_color = colors.lightgrey
+
     def _get_wadl_color(self, wadl_val):
-        if not isinstance(wadl_val, (int, float)): return self.font_dark
+        if not isinstance(wadl_val, (int, float)):
+            return self.font_dark
         if wadl_val <= 30: return colors.green
         elif 30 < wadl_val <= 60: return colors.orange
         else: return colors.red
+
     def format_amount_lakhs(self, n):
         try:
             n = float(n)
             if abs(n) >= 100000: return f"{n/100000:.2f} L"
             return f"{n:,.0f}"
         except (ValueError, TypeError): return "N/A"
+
     def generate_summary_pdf(self, summary_data, credit_days):
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=LETTER, rightMargin=72, leftMargin=72, topMargin=72, bottomMargin=72)
@@ -238,7 +194,7 @@ class PdfGenerator:
         for i, item in enumerate(summary_data):
             row_index = i + 1
             wadl_val = item['WADL']
-            wadl_text = f"{wadl_val:.1f}" if isinstance(wadl_val, (int, float)) else wadl_val
+            wadl_text = f"{wadl_val:.1f}" if isinstance(wadl_val, (int, float)) else wadl_val # FORMATTING FIX
             table_data.append([item["Company / Ledger"], wadl_text])
             wadl_color = self._get_wadl_color(wadl_val)
             table_styles.append(('TEXTCOLOR', (1, row_index), (1, row_index), wadl_color))
@@ -248,6 +204,7 @@ class PdfGenerator:
         doc.build(elements)
         buffer.seek(0)
         return buffer
+
     def generate_detailed_pdf(self, ledger_name, grand_wdl, qtr_df, details_df, credit_days, chart_path):
         buffer = BytesIO()
         doc = SimpleDocTemplate(buffer, pagesize=landscape(LETTER), rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
@@ -262,7 +219,7 @@ class PdfGenerator:
         elements.append(Spacer(1, 6))
         elements.append(Paragraph(f"By Fiscal Year — {credit_days} Days Credit Period", styles['CenterH3']))
         elements.append(Spacer(1, 12))
-        elements.append(Paragraph(f"Grand Weighted Avg Days Late: <b>{grand_wdl:.1f}</b>", styles['CenterH2']))
+        elements.append(Paragraph(f"Grand Weighted Avg Days Late: <b>{grand_wdl:.1f}</b>", styles['CenterH2'])) # FORMATTING FIX
         elements.append(Spacer(1, 24))
         qtr_table_data = [["Quarter", "Wtd Avg Days Late", "Total Sales", "Invoices"]]
         qtr_table_styles = [
@@ -275,7 +232,7 @@ class PdfGenerator:
         for i, row in qtr_df.iterrows():
             row_index = i + 1
             wadl_val = row['Wtd Avg Days Late']
-            qtr_table_data.append([row["Quarter Label"], f"{wadl_val:.1f}", self.format_amount_lakhs(row['Total Sales']), int(row['Invoices'])])
+            qtr_table_data.append([row["Quarter Label"], f"{wadl_val:.1f}", self.format_amount_lakhs(row['Total Sales']), int(row['Invoices'])]) # FORMATTING FIX
             wadl_color = self._get_wadl_color(wadl_val)
             qtr_table_styles.append(('TEXTCOLOR', (1, row_index), (1, row_index), wadl_color))
         qtr_summary_table = Table(qtr_table_data, colWidths=[170, 150, 120, 80], hAlign='CENTER')
@@ -288,11 +245,11 @@ class PdfGenerator:
         details_df_sorted = details_df.sort_values(by="Sale_Date_DT")
         for q_label in qtr_df['Quarter Label']:
             q_wdl = qtr_df[qtr_df['Quarter Label'] == q_label]['Wtd Avg Days Late'].iloc[0]
-            elements.append(Paragraph(f"{q_label}: Weighted Avg Days Late = {q_wdl:.1f}", styles['LeftH3']))
+            elements.append(Paragraph(f"{q_label}: Weighted Avg Days Late = {q_wdl:.1f}", styles['LeftH3'])) # FORMATTING FIX
             q_invoices = details_df_sorted[details_df_sorted['Quarter Label'] == q_label]
             invoice_data = [["Sale Date", "Invoice No", "Sale Amount", "Wtd Days Late", "Amount Remaining"]]
             for _, row in q_invoices.iterrows():
-                invoice_data.append([row["Sale Date"], row["Invoice No"], f"{row['Sale Amount']:,.2f}", f"{row['Weighted Days Late']:.1f}", f"{row['Amount Remaining']:,.2f}"])
+                invoice_data.append([row["Sale Date"], row["Invoice No"], f"{row['Sale Amount']:,.2f}", f"{row['Weighted Days Late']:.1f}", f"{row['Amount Remaining']:,.2f}"]) # FORMATTING FIX
             invoice_table = Table(invoice_data, colWidths=[90, 140, 110, 110, 120])
             invoice_table.setStyle(TableStyle([
                 ('BACKGROUND', (0,0), (-1,0), self.primary_color), ('TEXTCOLOR',(0,0),(-1,0), self.font_light),
@@ -313,13 +270,6 @@ def style_wadl(val):
     if not isinstance(val, (int, float)): return ''
     if val <= 30: color = 'green'
     elif 30 < val <= 60: color = 'orange'
-    else: color = 'red'
-    return f'color: {color}'
-
-def style_risk(val):
-    if not isinstance(val, (int, float)): return ''
-    if val <= 40: color = 'green'
-    elif 40 < val <= 75: color = 'orange'
     else: color = 'red'
     return f'color: {color}'
 
@@ -346,14 +296,13 @@ def main():
         analyzer = AnalysisEngine()
         pdf_creator = PdfGenerator()
 
-        summary_data, detailed_reports, quarterly_reports, risk_reports = [], {}, {}, {}
+        summary_data, detailed_reports, quarterly_reports = [], {}, {}
         with st.spinner("Analyzing all ledgers..."):
             for name, df in ledgers.items():
-                wdl, details_df, qtr_df, risk_df = analyzer.run_full_analysis(df, credit_days)
+                wdl, details_df, qtr_df = analyzer.run_full_analysis(df, credit_days)
                 summary_data.append({"Company / Ledger": name, "WADL": wdl})
                 detailed_reports[name] = details_df
                 quarterly_reports[name] = qtr_df
-                risk_reports[name] = risk_df
         
         summary_df = pd.DataFrame(summary_data)
         numeric_summary_df = summary_df[pd.to_numeric(summary_df['WADL'], errors='coerce').notnull()].copy()
@@ -366,10 +315,12 @@ def main():
         with col1:
             st.markdown("#### ✅ Top 5 Best Paying Customers")
             best_df = numeric_summary_df.sort_values(by="WADL", ascending=True).head(5)
+            # FORMATTING FIX
             st.dataframe(best_df.style.applymap(style_wadl, subset=['WADL']).format({'WADL': '{:.1f}'}), use_container_width=True)
         with col2:
             st.markdown("#### 🚨 Top 5 Worst Paying Customers")
             worst_df = numeric_summary_df.sort_values(by="WADL", ascending=False).head(5)
+            # FORMATTING FIX
             st.dataframe(worst_df.style.applymap(style_wadl, subset=['WADL']).format({'WADL': '{:.1f}'}), use_container_width=True)
 
         st.divider()
@@ -377,22 +328,23 @@ def main():
         st.header("Overall Summary of All Ledgers")
         st.markdown(f"**Credit Period Set To:** {credit_days} Days")
 
-        if not numeric_summary_df.empty and len(numeric_summary_df) > 1:
+        if not numeric_summary_df.empty:
             min_wadl = float(numeric_summary_df['WADL'].min())
             max_wadl = float(numeric_summary_df['WADL'].max())
-            if min_wadl < max_wadl:
-                wadl_range = st.slider(
-                    'Filter by WADL Range:', min_value=min_wadl, max_value=max_wadl, value=(min_wadl, max_wadl)
-                )
-                filtered_df = summary_df[
-                    (pd.to_numeric(summary_df['WADL'], errors='coerce') >= wadl_range[0]) &
-                    (pd.to_numeric(summary_df['WADL'], errors='coerce') <= wadl_range[1])
-                ]
-                st.dataframe(filtered_df.style.applymap(style_wadl, subset=['WADL']).format({'WADL': '{:.1f}'}), use_container_width=True)
-            else:
-                st.dataframe(summary_df.style.applymap(style_wadl, subset=['WADL']).format({'WADL': '{:.1f}'}), use_container_width=True)
+            wadl_range = st.slider(
+                'Filter by WADL Range:',
+                min_value=min_wadl,
+                max_value=max_wadl,
+                value=(min_wadl, max_wadl)
+            )
+            filtered_df = summary_df[
+                (pd.to_numeric(summary_df['WADL'], errors='coerce') >= wadl_range[0]) &
+                (pd.to_numeric(summary_df['WADL'], errors='coerce') <= wadl_range[1])
+            ]
+            # FORMATTING FIX
+            st.dataframe(filtered_df.style.applymap(style_wadl, subset=['WADL']).format({'WADL': '{:.1f}'}), use_container_width=True)
         else:
-            st.dataframe(summary_df.style.applymap(style_wadl, subset=['WADL']).format({'WADL': '{:.1f}'}), use_container_width=True)
+            st.dataframe(summary_df)
 
         summary_pdf_buffer = pdf_creator.generate_summary_pdf(summary_df.to_dict('records'), credit_days)
         st.download_button(
@@ -404,32 +356,26 @@ def main():
 
         st.header("In-depth Analysis per Company")
         all_ledgers = list(ledgers.keys())
-        selected_ledgers = st.multiselect("Search and select one or more companies for a detailed report:", options=all_ledgers, default=all_ledgers[0] if all_ledgers else [])
+        selected_ledgers = st.multiselect("Search and select one or more companies for a detailed report:", options=all_ledgers)
 
         for selected_ledger in selected_ledgers:
             grand_wdl = next((item['WADL'] for item in summary_data if item['Company / Ledger'] == selected_ledger), 0)
             details_df = detailed_reports[selected_ledger]
             qtr_df = quarterly_reports[selected_ledger]
-            risk_df = risk_reports[selected_ledger]
 
             if not details_df.empty:
                 with st.container():
                     st.subheader(f"Detailed Report for: {selected_ledger}")
-                    if not risk_df.empty:
-                        st.markdown("#### 🔮 Proactive Risk Dashboard")
-                        st.warning("The model predicts the following **open invoices** are at the highest risk of being paid late. Focus collection efforts here.")
-                        st.dataframe(risk_df.style.applymap(style_risk, subset=['Risk Score (%)']).format({'Risk Score (%)': '{:.1f}%'}), use_container_width=True)
-                    else:
-                        st.markdown("#### 🔮 Proactive Risk Dashboard")
-                        st.success("No open invoices found or not enough historical data to predict payment risk for this customer.")
-                    st.markdown(f"---")
-                    st.markdown(f"**Historical Performance Report**")
+                    # FORMATTING FIX
                     st.markdown(f"**Grand Weighted Avg Days Late: {grand_wdl:.1f}**")
+                    
                     st.markdown("##### Quarterly Performance Summary")
                     qtr_display_df = qtr_df.copy()
+                    # FORMATTING FIX
                     qtr_display_df['Wtd Avg Days Late'] = qtr_display_df['Wtd Avg Days Late'].map('{:,.1f}'.format)
                     qtr_display_df['Total Sales'] = qtr_display_df['Total Sales'].apply(pdf_creator.format_amount_lakhs)
                     st.table(qtr_display_df)
+                    
                     fig, ax = plt.subplots(figsize=(10, 4))
                     chart_df = details_df.sort_values(by="Sale_Date_DT")
                     ax.plot(chart_df["Sale_Date_DT"], chart_df["Weighted Days Late"], marker='o', linestyle='-', markersize=4, color=MODERN_BLUE_HEX)
@@ -438,6 +384,7 @@ def main():
                     ax.set_ylabel("Weighted Days Late")
                     plt.grid(True, linestyle='--', alpha=0.6)
                     st.pyplot(fig)
+                    
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
                         fig.savefig(tmpfile.name, bbox_inches='tight', dpi=300)
                         detailed_pdf_buffer = pdf_creator.generate_detailed_pdf(selected_ledger, grand_wdl, qtr_df, details_df, credit_days, tmpfile.name)
