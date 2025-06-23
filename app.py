@@ -118,7 +118,17 @@ class AnalysisEngine:
         invoice_details = []
         for sale in sales:
             if sale['amount'] == 0: continue
-            invoice_weighted_impact = sum(payment['pay_amt'] * (payment['pay_date'] - sale['due_date']).days for payment in sale['payments'])
+            
+            # --- THIS IS THE NEW "SANITY CHECK" LOGIC ---
+            invoice_weighted_impact = 0
+            for payment in sale['payments']:
+                # A payment cannot be made before the invoice exists.
+                # The effective date for calculation is the LATER of the payment date or the sale date.
+                effective_payment_date = max(payment['pay_date'], sale['date'])
+                days_late = (effective_payment_date - sale['due_date']).days
+                invoice_weighted_impact += payment['pay_amt'] * days_late
+            # --- END OF NEW LOGIC ---
+
             weighted_days_for_invoice = invoice_weighted_impact / sale['amount'] if sale['amount'] > 0 else 0
             q_label, f_year, f_q, q_sort_date = self.get_fiscal_quarter_label(sale['date'])
             invoice_details.append({
@@ -271,15 +281,10 @@ class PdfGenerator:
 # --- STREAMLIT UI (MAIN APP) ---
 # ==============================================================================
 def style_wadl(val):
-    """Applies color to WADL values for on-screen display."""
-    if not isinstance(val, (int, float)):
-        return ''
-    if val <= 30:
-        color = 'green'
-    elif 30 < val <= 60:
-        color = 'orange'
-    else:
-        color = 'red'
+    if not isinstance(val, (int, float)): return ''
+    if val <= 30: color = 'green'
+    elif 30 < val <= 60: color = 'orange'
+    else: color = 'red'
     return f'color: {color}'
 
 def main():
@@ -319,7 +324,6 @@ def main():
 
         st.divider()
 
-        # --- FEATURE 1: CUSTOMER RANKING ---
         st.header("Customer Ranking Dashboard")
         col1, col2 = st.columns(2)
         with col1:
@@ -333,7 +337,6 @@ def main():
 
         st.divider()
         
-        # --- FEATURE 2: ADVANCED FILTERING ---
         st.header("Overall Summary of All Ledgers")
         st.markdown(f"**Credit Period Set To:** {credit_days} Days")
 
@@ -352,7 +355,7 @@ def main():
             ]
             st.dataframe(filtered_df.style.applymap(style_wadl, subset=['WADL']), use_container_width=True)
         else:
-            st.dataframe(summary_df) # Show unfiltered if no numeric data
+            st.dataframe(summary_df)
 
         summary_pdf_buffer = pdf_creator.generate_summary_pdf(summary_df.to_dict('records'), credit_days)
         st.download_button(
@@ -362,7 +365,6 @@ def main():
 
         st.divider()
 
-        # --- FEATURE 2: SEARCHABLE MULTI-SELECT ---
         st.header("In-depth Analysis per Company")
         all_ledgers = list(ledgers.keys())
         selected_ledgers = st.multiselect("Search and select one or more companies for a detailed report:", options=all_ledgers)
@@ -376,13 +378,11 @@ def main():
                 with st.container():
                     st.subheader(f"Detailed Report for: {selected_ledger}")
                     st.markdown(f"**Grand Weighted Avg Days Late: {grand_wdl:.2f}**")
-                    
                     st.markdown("##### Quarterly Performance Summary")
                     qtr_display_df = qtr_df.copy()
                     qtr_display_df['Wtd Avg Days Late'] = qtr_display_df['Wtd Avg Days Late'].map('{:,.2f}'.format)
                     qtr_display_df['Total Sales'] = qtr_display_df['Total Sales'].apply(pdf_creator.format_amount_lakhs)
                     st.table(qtr_display_df)
-                    
                     fig, ax = plt.subplots(figsize=(10, 4))
                     chart_df = details_df.sort_values(by="Sale_Date_DT")
                     ax.plot(chart_df["Sale_Date_DT"], chart_df["Weighted Days Late"], marker='o', linestyle='-', markersize=4, color=MODERN_BLUE_HEX)
@@ -391,7 +391,6 @@ def main():
                     ax.set_ylabel("Weighted Days Late")
                     plt.grid(True, linestyle='--', alpha=0.6)
                     st.pyplot(fig)
-                    
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmpfile:
                         fig.savefig(tmpfile.name, bbox_inches='tight', dpi=300)
                         detailed_pdf_buffer = pdf_creator.generate_detailed_pdf(selected_ledger, grand_wdl, qtr_df, details_df, credit_days, tmpfile.name)
@@ -400,9 +399,9 @@ def main():
                         data=detailed_pdf_buffer,
                         file_name=f"Detailed_Report_{selected_ledger}_{credit_days}days.pdf",
                         mime="application/pdf",
-                        key=f"pdf_{selected_ledger}" # Unique key for each button
+                        key=f"pdf_{selected_ledger}"
                     )
-                    st.markdown("---") # Separator for multi-select
+                    st.markdown("---")
             else:
                 st.warning(f"No sales data available to generate a detailed report for {selected_ledger}.")
     else:
