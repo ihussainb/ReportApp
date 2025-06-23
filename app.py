@@ -32,15 +32,16 @@ LIGHT_GRAY_HEX = '#f0f4f7'
 # ==============================================================================
 @st.cache_data
 def parse_tally_ledgers(file_content):
+    """
+    Parses a Tally multi-ledger export text into a dictionary of DataFrames.
+    This version is stable and designed for the standard multi-ledger export.
+    """
     ledgers, ledger_addresses = {}, {}
     current_ledger_rows, current_ledger_name, current_address, headers = [], None, None, None
     lines = file_content.splitlines()
-    first_ledger_name_found = False
-
-    for i, line in enumerate(lines):
+    for line in lines:
         line = line.replace("\ufeff", "").strip()
         cells = [cell.strip() for cell in line.split(',')]
-        
         if line.startswith("Ledger:"):
             if current_ledger_name and headers and current_ledger_rows:
                 df = pd.DataFrame(current_ledger_rows, columns=headers)
@@ -48,30 +49,22 @@ def parse_tally_ledgers(file_content):
                 ledger_addresses[current_ledger_name] = current_address
             current_ledger_name = cells[1].strip() if len(cells) > 1 else "Unknown"
             current_address, headers, current_ledger_rows = None, None, []
-            first_ledger_name_found = True
             continue
-
-        if not first_ledger_name_found and "Ledger Account" in line:
-            if i + 1 < len(lines):
-                name_cells = [cell.strip() for cell in lines[i+1].split(',')]
-                if name_cells and name_cells[0]:
-                    current_ledger_name = name_cells[0]
-                    first_ledger_name_found = True
-            continue
-
+        if current_ledger_name and current_address is None and headers is None and any(cells):
+            if not any(c in line for c in ["Date", "Particulars", "Debit", "Credit"]):
+                 current_address = cells[0]
+                 continue
         if "Date" in cells and "Particulars" in cells and "Debit" in cells and "Credit" in cells:
             headers = [h.strip() if h.strip() else f"Unnamed_{i}" for i, h in enumerate(cells)]
             continue
-            
         if headers and len(cells) >= 4 and not (cells[1] if len(cells) > 1 else "").strip().startswith("Closing Balance"):
             while len(cells) < len(headers): cells.append("")
             current_ledger_rows.append(cells)
-
+    # Final save after the loop for the last ledger in the file
     if current_ledger_name and headers and current_ledger_rows:
         df = pd.DataFrame(current_ledger_rows, columns=headers)
         ledgers[current_ledger_name] = df
         ledger_addresses[current_ledger_name] = current_address
-        
     return ledgers, ledger_addresses
 
 # ==============================================================================
@@ -370,12 +363,9 @@ def main():
         st.header("Overall Summary of All Ledgers")
         st.markdown(f"**Credit Period Set To:** {credit_days} Days")
 
-        # --- THIS IS THE FIX FOR THE SLIDER ---
         if not numeric_summary_df.empty and len(numeric_summary_df) > 1:
             min_wadl = float(numeric_summary_df['WADL'].min())
             max_wadl = float(numeric_summary_df['WADL'].max())
-            
-            # Ensure min_value is strictly less than max_value
             if min_wadl < max_wadl:
                 wadl_range = st.slider(
                     'Filter by WADL Range:', min_value=min_wadl, max_value=max_wadl, value=(min_wadl, max_wadl)
@@ -386,10 +376,8 @@ def main():
                 ]
                 st.dataframe(filtered_df.style.applymap(style_wadl, subset=['WADL']).format({'WADL': '{:.1f}'}), use_container_width=True)
             else:
-                # If min and max are the same, just show the full table without the slider
                 st.dataframe(summary_df.style.applymap(style_wadl, subset=['WADL']).format({'WADL': '{:.1f}'}), use_container_width=True)
         else:
-            # Show the full table if there's only one or zero customers
             st.dataframe(summary_df.style.applymap(style_wadl, subset=['WADL']).format({'WADL': '{:.1f}'}), use_container_width=True)
 
         summary_pdf_buffer = pdf_creator.generate_summary_pdf(summary_df.to_dict('records'), credit_days)
