@@ -4,4 +4,4 @@ reportlab
 matplotlib
 plotly
 openpyxl
-LogisticRegression
+
