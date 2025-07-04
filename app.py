@@ -1,7 +1,8 @@
+# app.py (FINAL VERSION - QUARTERLY AVERAGE EXCLUDES UNPAID)
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import timedelta, date
+from datetime import timedelta
 from io import BytesIO
 import base64
 import matplotlib
@@ -26,45 +27,49 @@ MODERN_BLUE_HEX = '#2a3f5f'
 LIGHT_GRAY_HEX = '#f0f4f7'
 
 def parse_tally_ledgers(file_content: str) -> (dict, dict):
+    # This robust multi-ledger parser is correct.
     ledgers, ledger_addresses = {}, {}
     current_ledger_rows, current_ledger_name, current_address, headers = [], None, None, []
     lines = file_content.splitlines()
+    
     for line in lines:
         line = line.replace("\ufeff", "").strip()
         if not line: continue
+        
         cells = [cell.strip() for cell in line.split(',')]
+
         if line.startswith("Ledger:"):
             if current_ledger_name and headers and current_ledger_rows:
                 df = pd.DataFrame(current_ledger_rows, columns=headers)
                 ledgers[current_ledger_name] = df
                 ledger_addresses[current_ledger_name] = current_address
+            
             current_ledger_name = cells[1].strip() if len(cells) > 1 else "Unknown"
             current_address, headers, current_ledger_rows = None, None, []
             continue
+
         if current_ledger_name:
             if not headers and not any(c in line for c in ["Date", "Particulars", "Debit", "Credit"]):
                 if current_address is None:
                     current_address = cells[0]
                 continue
+
             if "Date" in cells and "Particulars" in cells:
                 headers = [h.strip() if h.strip() else f"Unnamed_{i}" for i, h in enumerate(cells)]
                 continue
+
             if headers:
                 if "Closing Balance" in line or not cells[0]:
                     continue
                 if len(cells) == len(headers):
                     current_ledger_rows.append(cells)
+
     if current_ledger_name and headers and current_ledger_rows:
         df = pd.DataFrame(current_ledger_rows, columns=headers)
         ledgers[current_ledger_name] = df
         ledger_addresses[current_ledger_name] = current_address
+        
     return ledgers, ledger_addresses
-
-def safe_float(val):
-    try:
-        return float(str(val).replace(",", ""))
-    except (ValueError, TypeError):
-        return 0.0
 
 class AnalysisEngine:
     def get_fiscal_quarter_label(self, dt):
@@ -81,33 +86,32 @@ class AnalysisEngine:
         return q_label, fiscal_year, quarter, sort_date
 
     def classify_sales_and_payments_robust(self, df, credit_days=0):
+        # This classification logic is correct.
         sales, payments = [], []
         df["Parsed_Date"] = pd.to_datetime(df["Date"], format=DATE_FMT, errors="coerce")
+        
         for _, row in df.iterrows():
             if pd.isna(row["Parsed_Date"]): continue
+            
             particulars = str(row.get("Particulars", "")).upper()
             unnamed_col_val = str(row.get(df.columns[2], "")).upper()
-            debit_amt = safe_float(row.get("Debit", "0"))
-            credit_amt = safe_float(row.get("Credit", "0"))
-            vch_no = row.get("Vch No.", "") or row.get("Vch No", "")
-            # If there's a debit, it's a receivable (sale or opening balance).
+            
+            try: debit_amt = float(str(row.get("Debit", "0")).replace(",", ""))
+            except (ValueError, TypeError): debit_amt = 0.0
+            try: credit_amt = float(str(row.get("Credit", "0")).replace(",", ""))
+            except (ValueError, TypeError): credit_amt = 0.0
+
             if debit_amt > 0:
                 is_opening_balance = "OPENING BALANCE" in particulars or "OPENING BALANCE" in unnamed_col_val
-                vch_no_final = "Opening Balance" if is_opening_balance else vch_no
+                vch_no = "Opening Balance" if is_opening_balance else row.get("Vch No.", "")
                 sales.append({
-                    "date": row["Parsed_Date"],
-                    "vch_no": vch_no_final,
-                    "amount": debit_amt,
+                    "date": row["Parsed_Date"], "vch_no": vch_no, "amount": debit_amt,
                     "due_date": row["Parsed_Date"] + timedelta(days=credit_days),
-                    "remaining": debit_amt,
-                    "payments": []
+                    "remaining": debit_amt, "payments": []
                 })
-            # If there's a credit, it's a payment/reduction.
             elif credit_amt > 0:
                 payments.append({
-                    "date": row["Parsed_Date"],
-                    "amount": credit_amt,
-                    "vch_no": vch_no
+                    "date": row["Parsed_Date"], "amount": credit_amt, "vch_no": row.get("Vch No.", "")
                 })
         return sales, payments
 
@@ -135,10 +139,15 @@ class AnalysisEngine:
         for sale in sales:
             if sale['amount'] == 0: continue
             invoice_weighted_impact = 0
+            # --- THIS IS A KEY PIECE OF INFO ---
+            # We track if any payment was made to this invoice
+            has_payment = len(sale['payments']) > 0
+            
             for payment in sale['payments']:
                 effective_payment_date = max(payment['pay_date'], sale['date'])
                 days_late = (effective_payment_date - sale['due_date']).days
                 invoice_weighted_impact += payment['pay_amt'] * days_late
+            
             weighted_days_for_invoice = invoice_weighted_impact / sale['amount'] if sale['amount'] > 0 else 0
             q_label, f_year, f_q, q_sort_date = self.get_fiscal_quarter_label(sale['date'])
             invoice_details.append({
@@ -146,24 +155,40 @@ class AnalysisEngine:
                 "Sale Amount": sale['amount'], "Due Date": sale['due_date'].strftime(DATE_FMT),
                 "Weighted Days Late": round(weighted_days_for_invoice, 1),
                 "Amount Remaining": round(sale['remaining'], 2),
-                "Quarter Label": q_label, "Fiscal Year": f_year, "Fiscal Quarter": f_q, "Quarter Sort Date": q_sort_date
+                "Quarter Label": q_label, "Fiscal Year": f_year, "Fiscal Quarter": f_q, "Quarter Sort Date": q_sort_date,
+                "Has_Payment": has_payment # Add this flag to the details
             })
         if not invoice_details: return 0, pd.DataFrame(), pd.DataFrame()
+        
         details_df = pd.DataFrame(invoice_details)
+        
+        # Grand WADL is calculated on ALL invoices (paid and unpaid)
         total_sale_amount = details_df['Sale Amount'].sum()
         total_weighted_impact = (details_df['Weighted Days Late'] * details_df['Sale Amount']).sum()
         grand_wdl = round(total_weighted_impact / total_sale_amount, 1) if total_sale_amount > 0 else 0
-        quarterly_summary = details_df.groupby('Quarter Label').apply(
-            lambda g: pd.Series({
-                'Wtd Avg Days Late': np.average(g['Weighted Days Late'], weights=g['Sale Amount']),
-                'Total Sales': g['Sale Amount'].sum(), 'Invoices': len(g),
-                'Sort_Date': g['Quarter Sort Date'].iloc[0]
-            })
-        ).reset_index()
-        quarterly_summary = quarterly_summary.sort_values('Sort_Date').drop(columns=['Sort_Date'])
-        quarterly_summary.rename(columns={'Quarter Label': 'Quarter'}, inplace=True)
+        
+        # --- THE FINAL FIX: FILTER BEFORE CALCULATING QUARTERLY AVERAGE ---
+        # Create a new DataFrame containing only invoices that have received a payment.
+        paid_invoices_df = details_df[details_df['Has_Payment'] == True].copy()
+
+        if not paid_invoices_df.empty:
+            quarterly_summary = paid_invoices_df.groupby('Quarter Label').apply(
+                lambda g: pd.Series({
+                    'Wtd Avg Days Late': np.average(g['Weighted Days Late'], weights=g['Sale Amount']),
+                    'Total Sales': g['Sale Amount'].sum(), 'Invoices': len(g),
+                    'Sort_Date': g['Quarter Sort Date'].iloc[0]
+                })
+            ).reset_index()
+            quarterly_summary = quarterly_summary.sort_values('Sort_Date').drop(columns=['Sort_Date'])
+            quarterly_summary.rename(columns={'Quarter Label': 'Quarter'}, inplace=True)
+        else:
+            # If no invoices are paid at all, return an empty summary
+            quarterly_summary = pd.DataFrame(columns=['Quarter', 'Wtd Avg Days Late', 'Total Sales', 'Invoices'])
+
         return grand_wdl, details_df, quarterly_summary
 
+# --- All other classes (PdfGenerator) and Streamlit UI code remain the same ---
+# (Pasting them for completeness)
 class PdfGenerator:
     def __init__(self):
         self.primary_color = HexColor(MODERN_BLUE_HEX)
@@ -240,7 +265,6 @@ class PdfGenerator:
         buffer.seek(0)
         return buffer
 
-# --- STREAMLIT CACHED FUNCTIONS ---
 @st.cache_data
 def run_analysis_for_all(_file_content, credit_days):
     ledgers, _ = parse_tally_ledgers(_file_content)
@@ -282,7 +306,6 @@ def generate_pdf_base64(_file_content, credit_days, ledger_name):
         if chart_path and os.path.exists(chart_path):
             os.remove(chart_path)
 
-# --- STREAMLIT UI ---
 st.set_page_config(layout="wide")
 st.title("📊 Tally Ledger Analysis Engine")
 st.sidebar.header("⚙️ Settings")
