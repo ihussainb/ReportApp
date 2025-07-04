@@ -1,8 +1,7 @@
-# app.py (FINAL, VERIFIED, AND CORRECT VERSION)
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import timedelta
+from datetime import timedelta, date
 from io import BytesIO
 import base64
 import matplotlib
@@ -27,49 +26,45 @@ MODERN_BLUE_HEX = '#2a3f5f'
 LIGHT_GRAY_HEX = '#f0f4f7'
 
 def parse_tally_ledgers(file_content: str) -> (dict, dict):
-    # This robust multi-ledger parser is correct.
     ledgers, ledger_addresses = {}, {}
     current_ledger_rows, current_ledger_name, current_address, headers = [], None, None, []
     lines = file_content.splitlines()
-    
     for line in lines:
         line = line.replace("\ufeff", "").strip()
         if not line: continue
-        
         cells = [cell.strip() for cell in line.split(',')]
-
         if line.startswith("Ledger:"):
             if current_ledger_name and headers and current_ledger_rows:
                 df = pd.DataFrame(current_ledger_rows, columns=headers)
                 ledgers[current_ledger_name] = df
                 ledger_addresses[current_ledger_name] = current_address
-            
             current_ledger_name = cells[1].strip() if len(cells) > 1 else "Unknown"
             current_address, headers, current_ledger_rows = None, None, []
             continue
-
         if current_ledger_name:
             if not headers and not any(c in line for c in ["Date", "Particulars", "Debit", "Credit"]):
                 if current_address is None:
                     current_address = cells[0]
                 continue
-
             if "Date" in cells and "Particulars" in cells:
                 headers = [h.strip() if h.strip() else f"Unnamed_{i}" for i, h in enumerate(cells)]
                 continue
-
             if headers:
                 if "Closing Balance" in line or not cells[0]:
                     continue
                 if len(cells) == len(headers):
                     current_ledger_rows.append(cells)
-
     if current_ledger_name and headers and current_ledger_rows:
         df = pd.DataFrame(current_ledger_rows, columns=headers)
         ledgers[current_ledger_name] = df
         ledger_addresses[current_ledger_name] = current_address
-        
     return ledgers, ledger_addresses
+
+def safe_float(val):
+    try:
+        return float(str(val).replace(",", ""))
+    except (ValueError, TypeError):
+        return 0.0
 
 class AnalysisEngine:
     def get_fiscal_quarter_label(self, dt):
@@ -86,44 +81,34 @@ class AnalysisEngine:
         return q_label, fiscal_year, quarter, sort_date
 
     def classify_sales_and_payments_robust(self, df, credit_days=0):
-        # --- THIS IS THE FINAL, VERIFIED, AND CORRECT CLASSIFICATION LOGIC ---
-        # --- BASED ON THE SUPERIOR, SIMPLER STRUCTURE YOU PROVIDED ---
         sales, payments = [], []
         df["Parsed_Date"] = pd.to_datetime(df["Date"], format=DATE_FMT, errors="coerce")
-        
         for _, row in df.iterrows():
             if pd.isna(row["Parsed_Date"]): continue
-            
             particulars = str(row.get("Particulars", "")).upper()
             unnamed_col_val = str(row.get(df.columns[2], "")).upper()
-            
-            try: debit_amt = float(str(row.get("Debit", "0")).replace(",", ""))
-            except (ValueError, TypeError): debit_amt = 0.0
-            try: credit_amt = float(str(row.get("Credit", "0")).replace(",", ""))
-            except (ValueError, TypeError): credit_amt = 0.0
-
+            debit_amt = safe_float(row.get("Debit", "0"))
+            credit_amt = safe_float(row.get("Credit", "0"))
+            vch_no = row.get("Vch No.", "") or row.get("Vch No", "")
             # If there's a debit, it's a receivable (sale or opening balance).
             if debit_amt > 0:
                 is_opening_balance = "OPENING BALANCE" in particulars or "OPENING BALANCE" in unnamed_col_val
-                vch_no = "Opening Balance" if is_opening_balance else row.get("Vch No.", "")
-                
+                vch_no_final = "Opening Balance" if is_opening_balance else vch_no
                 sales.append({
                     "date": row["Parsed_Date"],
-                    "vch_no": vch_no,
+                    "vch_no": vch_no_final,
                     "amount": debit_amt,
                     "due_date": row["Parsed_Date"] + timedelta(days=credit_days),
                     "remaining": debit_amt,
                     "payments": []
                 })
-
             # If there's a credit, it's a payment/reduction.
             elif credit_amt > 0:
                 payments.append({
                     "date": row["Parsed_Date"],
                     "amount": credit_amt,
-                    "vch_no": row.get("Vch No.", "")
+                    "vch_no": vch_no
                 })
-        
         return sales, payments
 
     def allocate_payments_fifo(self, sales, payments):
@@ -168,7 +153,6 @@ class AnalysisEngine:
         total_sale_amount = details_df['Sale Amount'].sum()
         total_weighted_impact = (details_df['Weighted Days Late'] * details_df['Sale Amount']).sum()
         grand_wdl = round(total_weighted_impact / total_sale_amount, 1) if total_sale_amount > 0 else 0
-        
         quarterly_summary = details_df.groupby('Quarter Label').apply(
             lambda g: pd.Series({
                 'Wtd Avg Days Late': np.average(g['Weighted Days Late'], weights=g['Sale Amount']),
@@ -178,7 +162,6 @@ class AnalysisEngine:
         ).reset_index()
         quarterly_summary = quarterly_summary.sort_values('Sort_Date').drop(columns=['Sort_Date'])
         quarterly_summary.rename(columns={'Quarter Label': 'Quarter'}, inplace=True)
-        
         return grand_wdl, details_df, quarterly_summary
 
 class PdfGenerator:
@@ -275,7 +258,7 @@ def run_analysis_for_all(_file_content, credit_days):
 
 @st.cache_data
 def generate_pdf_base64(_file_content, credit_days, ledger_name):
-    summary__df, detailed_reports, quarterly_reports = run_analysis_for_all(_file_content, credit_days)
+    summary_df, detailed_reports, quarterly_reports = run_analysis_for_all(_file_content, credit_days)
     details_df = detailed_reports.get(ledger_name)
     qtr_df = quarterly_reports.get(ledger_name)
     if details_df is None or qtr_df is None or summary_df[summary_df['Company / Ledger'] == ledger_name].empty:
