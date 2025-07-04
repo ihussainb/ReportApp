@@ -38,73 +38,24 @@ LIGHT_GRAY_HEX = '#f0f4f7'
 
 def parse_tally_ledgers(file_content: str) -> (Dict[str, pd.DataFrame], Dict[str, str]):
     # --- NEW, ROBUST, HANG-PROOF MULTI-LEDGER PARSER ---
-    # This parser correctly handles both multi-ledger files and single-ledger files like 'premier cans.csv'.
     ledgers, ledger_addresses = {}, {}
-    lines = file_content.splitlines()
-    
-    ledger_blocks = []
-    current_block = []
-    
-    # First, split the file into blocks based on the "Ledger:" separator
-    for line in lines:
-        if line.strip().startswith("Ledger:"):
-            if current_block:
-                ledger_blocks.append(current_block)
-            current_block = [line]
-        else:
-            current_block.append(line)
-    if current_block:
-        ledger_blocks.append(current_block)
+    # Split the entire file content by the "Ledger:" delimiter. This is more robust than a line-by-line state machine.
+    # The first split part will be anything before the first ledger, so we skip it.
+    ledger_texts = file_content.split("Ledger:")[1:]
 
-    # Now, process each block of text as a potential ledger
-    for block in ledger_blocks:
+    if not ledger_texts:
+        # Handle case where "Ledger:" is not present (e.g., premier cans.csv)
+        lines = file_content.splitlines()
         ledger_name = "Unknown Ledger"
-        address = None
+        # Try to find the name at the end
+        for line in reversed(lines):
+            if "Ledger -" in line:
+                ledger_name = line.split("Ledger -")[1].strip()
+                break
+        
         headers = None
         data_rows = []
-
-        # Find the ledger name and data within the block
-        for i, line in enumerate(block):
-            line = line.replace("\ufeff", "").strip()
-            if not line: continue
-            
-            cells = [cell.strip() for cell in line.split(',')]
-
-            if line.startswith("Ledger:"):
-                ledger_name = cells[1].strip() if len(cells) > 1 else "Unknown Ledger"
-                # The next line might be the address
-                if i + 1 < len(block) and "Date" not in block[i+1]:
-                    address = block[i+1].split(',')[0].strip()
-                continue
-
-            if "Date" in line and "Particulars" in line:
-                headers = [h.strip() if h.strip() else f"Unnamed_{i}" for i, h in enumerate(cells)]
-                continue
-
-            if headers:
-                # Check if it's a valid data row (correct number of columns and starts with a date-like value)
-                if len(cells) == len(headers) and cells[0] and (cells[0][0].isdigit() or "Opening Balance" in line):
-                    data_rows.append(cells)
-
-        # If we found data, create the DataFrame
-        if data_rows and headers:
-            df = pd.DataFrame(data_rows, columns=headers)
-            ledgers[ledger_name] = df
-            ledger_addresses[ledger_name] = address
-            
-    # Handle the special case of a single-ledger file where the name is at the end
-    if not ledgers and len(ledger_blocks) == 1:
-        # Re-scan the single block if the standard method failed
-        block = ledger_blocks[0]
-        ledger_name = "Premier Cans" # Fallback name
-        for line in reversed(block):
-             if "Ledger -" in line:
-                 ledger_name = line.split("Ledger -")[1].strip()
-                 break
-        # Now parse it again with the knowledge it's a single block
-        headers = None
-        data_rows = []
-        for line in block:
+        for line in lines:
             line = line.replace("\ufeff", "").strip()
             if not line: continue
             cells = [cell.strip() for cell in line.split(',')]
@@ -117,6 +68,37 @@ def parse_tally_ledgers(file_content: str) -> (Dict[str, pd.DataFrame], Dict[str
             df = pd.DataFrame(data_rows, columns=headers)
             ledgers[ledger_name] = df
             ledger_addresses[ledger_name] = "Not Parsed"
+        return ledgers, ledger_addresses
+
+    # Process each ledger block
+    for text_block in ledger_texts:
+        lines = text_block.strip().splitlines()
+        if not lines: continue
+
+        ledger_name = lines[0].split(',')[0].strip()
+        address = None
+        headers = None
+        data_rows = []
+
+        for i, line in enumerate(lines[1:]): # Start from the line after the name
+            cells = [cell.strip() for cell in line.split(',')]
+            if "Date" in line and "Particulars" in line:
+                headers = [h.strip() if h.strip() else f"Unnamed_{i}" for i, h in enumerate(cells)]
+                continue
+            
+            # Capture address if it's before the header
+            if headers is None and len(cells) > 0:
+                address = cells[0]
+                continue
+
+            if headers:
+                if len(cells) == len(headers) and cells[0] and (cells[0][0].isdigit() or "Opening Balance" in line):
+                    data_rows.append(cells)
+        
+        if data_rows and headers:
+            df = pd.DataFrame(data_rows, columns=headers)
+            ledgers[ledger_name] = df
+            ledger_addresses[ledger_name] = address
 
     return ledgers, ledger_addresses
 
