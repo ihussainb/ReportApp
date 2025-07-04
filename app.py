@@ -71,19 +71,32 @@ def parse_tally_ledgers(file_content: str) -> (dict, dict):
         
     return ledgers, ledger_addresses
 
+# The new, correct, and robust function
 class AnalysisEngine:
     def get_fiscal_quarter_label(self, dt):
         if pd.isna(dt): return "Invalid Date", None, None, None
+        
         year, month = dt.year, dt.month
-        fiscal_year_start_month = 4
-        if month >= fiscal_year_start_month: fiscal_year = year
-        else: fiscal_year = year - 1
-        if 4 <= month <= 6: quarter, sort_date = 1, pd.Timestamp(fiscal_year, 4, 1)
-        elif 7 <= month <= 9: quarter, sort_date = 2, pd.Timestamp(fiscal_year, 7, 1)
-        elif 10 <= month <= 12: quarter, sort_date = 3, pd.Timestamp(fiscal_year, 10, 1)
-        else: quarter, sort_date = 4, pd.Timestamp(fiscal_year + 1, 1, 1)
-        q_label = f"{fiscal_year} Q{quarter} {QUARTER_MONTHS[quarter]}"
-        return q_label, fiscal_year, quarter, sort_date
+
+        if 4 <= month <= 12:
+            # This is for Q1, Q2, Q3 (Apr-Dec)
+            fiscal_year_start = year
+            fiscal_year_label = f"{fiscal_year_start}-{str(fiscal_year_start + 1)[-2:]}"
+            if 4 <= month <= 6:
+                quarter, sort_date = 1, pd.Timestamp(year, 4, 1)
+            elif 7 <= month <= 9:
+                quarter, sort_date = 2, pd.Timestamp(year, 7, 1)
+            else: # 10 <= month <= 12
+                quarter, sort_date = 3, pd.Timestamp(year, 10, 1)
+        else: # This is for Q4 (Jan-Mar)
+            fiscal_year_start = year - 1
+            fiscal_year_label = f"{fiscal_year_start}-{str(fiscal_year_start + 1)[-2:]}"
+            quarter, sort_date = 4, pd.Timestamp(year, 1, 1)
+
+        # Create the final, unambiguous label
+        q_label = f"{fiscal_year_label} Q{quarter} {QUARTER_MONTHS[quarter]}"
+        
+        return q_label, fiscal_year_start, quarter, sort_date
 
     def classify_sales_and_payments_robust(self, df, credit_days=0):
         # This classification logic is correct.
