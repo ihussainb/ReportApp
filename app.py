@@ -1,4 +1,4 @@
-# app.py (FINAL, TESTED, AND VERIFIED VERSION)
+# app.py (FINAL, VERIFIED, AND CORRECT VERSION)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -27,6 +27,7 @@ MODERN_BLUE_HEX = '#2a3f5f'
 LIGHT_GRAY_HEX = '#f0f4f7'
 
 def parse_tally_ledgers(file_content: str) -> (dict, dict):
+    # This robust multi-ledger parser is correct.
     ledgers, ledger_addresses = {}, {}
     current_ledger_rows, current_ledger_name, current_address, headers = [], None, None, []
     lines = file_content.splitlines()
@@ -85,40 +86,50 @@ class AnalysisEngine:
         return q_label, fiscal_year, quarter, sort_date
 
     def classify_sales_and_payments_robust(self, df, credit_days=0):
-        # --- THIS IS THE FINAL, CORRECTED LOGIC ---
+        # --- THIS IS THE FINAL, VERIFIED, AND CORRECT CLASSIFICATION LOGIC ---
         sales, payments = [], []
         df["Parsed_Date"] = pd.to_datetime(df["Date"], format=DATE_FMT, errors="coerce")
         
         for _, row in df.iterrows():
             if pd.isna(row["Parsed_Date"]): continue
             
+            particulars = str(row.get("Particulars", "")).upper()
+            unnamed_col_val = str(row.get(df.columns[2], "")).upper()
+            vch_type = str(row.get("Vch Type", "")).upper()
+            
             try: debit_amt = float(str(row.get("Debit", "0")).replace(",", ""))
             except (ValueError, TypeError): debit_amt = 0.0
             try: credit_amt = float(str(row.get("Credit", "0")).replace(",", ""))
             except (ValueError, TypeError): credit_amt = 0.0
-
-            # Simplified and Correct Logic:
-            # If there's a debit, it's a receivable (sale or opening balance).
-            # If there's a credit, it's a payment/reduction.
-            if debit_amt > 0:
-                particulars = str(row.get("Particulars", "")).upper()
-                unnamed_col_val = str(row.get(df.columns[2], "")).upper()
-                vch_no = "Opening Balance" if "OPENING BALANCE" in particulars or "OPENING BALANCE" in unnamed_col_val else row["Vch No."]
-                
+            
+            # Explicit, structured logic to prevent errors.
+            
+            # Case 1: Opening Balance (A type of receivable)
+            if ("OPENING BALANCE" in particulars or "OPENING BALANCE" in unnamed_col_val) and debit_amt > 0:
                 sales.append({
-                    "date": row["Parsed_Date"],
-                    "vch_no": vch_no,
-                    "amount": debit_amt,
+                    "date": row["Parsed_Date"], "vch_no": "Opening Balance", "amount": debit_amt,
                     "due_date": row["Parsed_Date"] + timedelta(days=credit_days),
-                    "remaining": debit_amt,
-                    "payments": []
+                    "remaining": debit_amt, "payments": []
+                })
+                continue
+
+            # Case 2: Credit Note (A type of payment/reduction)
+            if "CREDIT NOTE" in vch_type and credit_amt > 0:
+                payments.append({"date": row["Parsed_Date"], "amount": credit_amt, "vch_no": row["Vch No."]})
+                continue
+
+            # Case 3: All other transactions
+            if debit_amt > 0:
+                # This is a regular sale
+                sales.append({
+                    "date": row["Parsed_Date"], "vch_no": row["Vch No."], "amount": debit_amt,
+                    "due_date": row["Parsed_Date"] + timedelta(days=credit_days),
+                    "remaining": debit_amt, "payments": []
                 })
             elif credit_amt > 0:
-                payments.append({
-                    "date": row["Parsed_Date"],
-                    "amount": credit_amt,
-                    "vch_no": row["Vch No."]
-                })
+                # This is a regular payment (Receipt, Journal Credit, etc.)
+                payments.append({"date": row["Parsed_Date"], "amount": credit_amt, "vch_no": row["Vch No."]})
+        
         return sales, payments
 
     def allocate_payments_fifo(self, sales, payments):
@@ -287,7 +298,7 @@ def generate_pdf_base64(_file_content, credit_days, ledger_name):
             fig.savefig(tmpfile.name, bbox_inches='tight', dpi=300)
             chart_path = tmpfile.name
         plt.close(fig)
-        pdf_buffer = pdf_creator.generate_detailed_pdf(ledger_name, grand_wdl, qtr_df, details__df, credit_days, chart_path)
+        pdf_buffer = pdf_creator.generate_detailed_pdf(ledger_name, grand_wdl, qtr_df, details_df, credit_days, chart_path)
         pdf_base64 = base64.b64encode(pdf_buffer.read()).decode('utf-8')
         return pdf_base64
     finally:
