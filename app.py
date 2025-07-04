@@ -1,4 +1,4 @@
-# app.py (FINAL CORRECTED VERSION)
+# app.py (FINAL VERSION - ROBUST MULTI-LEDGER PARSING RESTORED)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -6,7 +6,7 @@ from datetime import timedelta
 from io import BytesIO
 import base64
 import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend for Streamlit
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from reportlab.lib.pagesizes import LETTER, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
@@ -27,39 +27,55 @@ MODERN_BLUE_HEX = '#2a3f5f'
 LIGHT_GRAY_HEX = '#f0f4f7'
 
 def parse_tally_ledgers(file_content: str) -> (dict, dict):
-    # This function is robust and does not need changes.
+    # --- RESTORED AND ROBUST MULTI-LEDGER PARSER ---
+    # This version correctly handles multiple ledgers in one file and ignores summary lines.
     ledgers, ledger_addresses = {}, {}
     current_ledger_rows, current_ledger_name, current_address, headers = [], None, None, None
     lines = file_content.splitlines()
-    # Find the start of the actual data, skipping any initial summary lines
-    data_start_index = -1
-    for i, line in enumerate(lines):
-        if "Date" in line and "Particulars" in line:
-            data_start_index = i
-            # Assume the line before the header is the ledger name if it's not found elsewhere
-            if i > 0 and not lines[i-1].strip().startswith("Ledger:"):
-                 current_ledger_name = lines[i-1].strip().replace("Ledger - ", "")
-            break
     
-    if data_start_index == -1: return {}, {} # No data header found
-
-    headers = [h.strip() if h.strip() else f"Unnamed_{i}" for i, h in enumerate(lines[data_start_index].split(','))]
-    
-    for line in lines[data_start_index + 1:]:
+    for line in lines:
         line = line.replace("\ufeff", "").strip()
-        if not line or line.startswith(',') or "Closing Balance" in line:
-            continue
+        if not line: continue
+        
         cells = [cell.strip() for cell in line.split(',')]
-        if len(cells) < len(headers): continue # Skip malformed rows
-        current_ledger_rows.append(cells)
 
-    if not current_ledger_name: current_ledger_name = "Premier Cans" # Fallback
-    
+        if line.startswith("Ledger:"):
+            # If we were processing a previous ledger, save it first.
+            if current_ledger_name and headers and current_ledger_rows:
+                df = pd.DataFrame(current_ledger_rows, columns=headers)
+                ledgers[current_ledger_name] = df
+                ledger_addresses[current_ledger_name] = current_address
+            
+            # Start a new ledger
+            current_ledger_name = cells[1].strip() if len(cells) > 1 else "Unknown"
+            current_address, headers, current_ledger_rows = None, None, []
+            continue
+
+        if current_ledger_name:
+            # Capture address line which comes after the ledger name
+            if headers is None and not any(c in line for c in ["Date", "Particulars", "Debit", "Credit"]):
+                if current_address is None: # Capture only the first such line as address
+                    current_address = cells[0]
+                continue
+
+            # Detect header row
+            if "Date" in cells and "Particulars" in cells:
+                headers = [h.strip() if h.strip() else f"Unnamed_{i}" for i, h in enumerate(cells)]
+                continue
+
+            # Process data rows
+            if headers:
+                # This condition is key to filtering out summary/malformed lines
+                # It checks for a minimum length and ensures a Voucher Type exists.
+                if len(cells) == len(headers) and cells[3].strip() != "":
+                    current_ledger_rows.append(cells)
+
+    # Save the very last ledger in the file
     if current_ledger_name and headers and current_ledger_rows:
         df = pd.DataFrame(current_ledger_rows, columns=headers)
         ledgers[current_ledger_name] = df
-        ledger_addresses[current_ledger_name] = "Address not parsed in this format"
-
+        ledger_addresses[current_ledger_name] = current_address
+        
     return ledgers, ledger_addresses
 
 class AnalysisEngine:
@@ -78,17 +94,12 @@ class AnalysisEngine:
 
     def classify_sales_and_payments_robust(self, df, credit_days=0):
         sales, payments = [], []
-        # Handle potential empty column names from parsing
-        df.columns = [f'col_{i}' if c == '' else c for i, c in enumerate(df.columns)]
-        
         df["Parsed_Date"] = pd.to_datetime(df["Date"], format=DATE_FMT, errors="coerce")
         
         for _, row in df.iterrows():
             if pd.isna(row["Parsed_Date"]): continue
             
-            # Use .get() to avoid KeyError if a column is missing
             particulars = str(row.get("Particulars", "")).upper()
-            # The "Opening Balance" text might be in the third column
             unnamed_col_val = str(row.get(df.columns[2], "")).upper()
             vch_type = str(row.get("Vch Type", "")).upper()
             
@@ -96,11 +107,7 @@ class AnalysisEngine:
             except (ValueError, TypeError): debit_amt = 0.0
             try: credit_amt = float(str(row.get("Credit", "0")).replace(",", ""))
             except (ValueError, TypeError): credit_amt = 0.0
-
-            # --- FINAL FIX: REMOVED THE LINE THAT IGNORED JOURNAL ENTRIES ---
-            # This was the bug. Now Journal entries with credits will be treated as payments.
             
-            # More robust check for Opening Balance across multiple columns
             if ("OPENING BALANCE" in particulars or "OPENING BALANCE" in unnamed_col_val) and debit_amt > 0:
                 sales.append({
                     "date": row["Parsed_Date"], "vch_no": "Opening Balance", "amount": debit_amt,
@@ -120,6 +127,7 @@ class AnalysisEngine:
                     "remaining": debit_amt, "payments": []
                 })
             elif credit_amt > 0:
+                # This now correctly captures Receipts, Journal Credits, etc.
                 payments.append({"date": row["Parsed_Date"], "amount": credit_amt, "vch_no": row["Vch No."]})
         return sales, payments
 
@@ -308,7 +316,7 @@ if uploaded_file is not None:
     file_content = uploaded_file.getvalue().decode("utf-8")
     summary_df, detailed_reports, quarterly_reports = run_analysis_for_all(file_content, credit_days)
     if summary_df.empty:
-        st.warning("No ledgers found or data could not be parsed from the uploaded file.")
+        st.warning("No ledgers found or data could not be parsed from the uploaded file. Please check the file format.")
     else:
         st.header("Overall Ledger Summary")
         st.dataframe(summary_df.style.format({"WADL": "{:.1f}"}))
@@ -327,7 +335,7 @@ if uploaded_file is not None:
             st.subheader("Download Report")
             pdf_base64 = generate_pdf_base64(file_content, credit_days, selected_ledger)
             if pdf_base64:
-                st.download_button(label="📥 Download Detailed PDF Report", data=base64.b64decode(pdf_base64), file_name=f"{selected_ledger}_Report_{credit_days}days.pdf", mime="application/octet-stream")
+                st.download_button(label="📥 Download Detailed PDF Report", data=base6.b64decode(pdf_base64), file_name=f"{selected_ledger}_Report_{credit_days}days.pdf", mime="application/octet-stream")
             else:
                 st.error("Could not generate PDF.")
 else:
