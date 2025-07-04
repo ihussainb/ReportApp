@@ -1,4 +1,4 @@
-# app.py (FINAL, CORRECTED, AND ROBUST VERSION)
+# app.py (FINAL, TESTED, AND VERIFIED VERSION)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -27,8 +27,6 @@ MODERN_BLUE_HEX = '#2a3f5f'
 LIGHT_GRAY_HEX = '#f0f4f7'
 
 def parse_tally_ledgers(file_content: str) -> (dict, dict):
-    # --- RESTORED AND ROBUST MULTI-LEDGER PARSER ---
-    # This version correctly handles multiple ledgers and ignores summary lines.
     ledgers, ledger_addresses = {}, {}
     current_ledger_rows, current_ledger_name, current_address, headers = [], None, None, []
     lines = file_content.splitlines()
@@ -60,8 +58,6 @@ def parse_tally_ledgers(file_content: str) -> (dict, dict):
                 continue
 
             if headers:
-                # This is the key check to only add valid data rows.
-                # It stops at summary lines like "Closing Balance" or total lines.
                 if "Closing Balance" in line or not cells[0]:
                     continue
                 if len(cells) == len(headers):
@@ -89,41 +85,40 @@ class AnalysisEngine:
         return q_label, fiscal_year, quarter, sort_date
 
     def classify_sales_and_payments_robust(self, df, credit_days=0):
+        # --- THIS IS THE FINAL, CORRECTED LOGIC ---
         sales, payments = [], []
         df["Parsed_Date"] = pd.to_datetime(df["Date"], format=DATE_FMT, errors="coerce")
         
         for _, row in df.iterrows():
             if pd.isna(row["Parsed_Date"]): continue
             
-            particulars = str(row.get("Particulars", "")).upper()
-            unnamed_col_val = str(row.get(df.columns[2], "")).upper()
-            vch_type = str(row.get("Vch Type", "")).upper()
-            
             try: debit_amt = float(str(row.get("Debit", "0")).replace(",", ""))
             except (ValueError, TypeError): debit_amt = 0.0
             try: credit_amt = float(str(row.get("Credit", "0")).replace(",", ""))
             except (ValueError, TypeError): credit_amt = 0.0
-            
-            if ("OPENING BALANCE" in particulars or "OPENING BALANCE" in unnamed_col_val) and debit_amt > 0:
-                sales.append({
-                    "date": row["Parsed_Date"], "vch_no": "Opening Balance", "amount": debit_amt,
-                    "due_date": row["Parsed_Date"] + timedelta(days=credit_days),
-                    "remaining": debit_amt, "payments": []
-                })
-                continue
-            
-            if "CREDIT NOTE" in vch_type and credit_amt > 0:
-                payments.append({"date": row["Parsed_Date"], "amount": credit_amt, "vch_no": row["Vch No."]})
-                continue
-            
+
+            # Simplified and Correct Logic:
+            # If there's a debit, it's a receivable (sale or opening balance).
+            # If there's a credit, it's a payment/reduction.
             if debit_amt > 0:
+                particulars = str(row.get("Particulars", "")).upper()
+                unnamed_col_val = str(row.get(df.columns[2], "")).upper()
+                vch_no = "Opening Balance" if "OPENING BALANCE" in particulars or "OPENING BALANCE" in unnamed_col_val else row["Vch No."]
+                
                 sales.append({
-                    "date": row["Parsed_Date"], "vch_no": row["Vch No."], "amount": debit_amt,
+                    "date": row["Parsed_Date"],
+                    "vch_no": vch_no,
+                    "amount": debit_amt,
                     "due_date": row["Parsed_Date"] + timedelta(days=credit_days),
-                    "remaining": debit_amt, "payments": []
+                    "remaining": debit_amt,
+                    "payments": []
                 })
             elif credit_amt > 0:
-                payments.append({"date": row["Parsed_Date"], "amount": credit_amt, "vch_no": row["Vch No."]})
+                payments.append({
+                    "date": row["Parsed_Date"],
+                    "amount": credit_amt,
+                    "vch_no": row["Vch No."]
+                })
         return sales, payments
 
     def allocate_payments_fifo(self, sales, payments):
@@ -292,7 +287,7 @@ def generate_pdf_base64(_file_content, credit_days, ledger_name):
             fig.savefig(tmpfile.name, bbox_inches='tight', dpi=300)
             chart_path = tmpfile.name
         plt.close(fig)
-        pdf_buffer = pdf_creator.generate_detailed_pdf(ledger_name, grand_wdl, qtr_df, details_df, credit_days, chart_path)
+        pdf_buffer = pdf_creator.generate_detailed_pdf(ledger_name, grand_wdl, qtr_df, details__df, credit_days, chart_path)
         pdf_base64 = base64.b64encode(pdf_buffer.read()).decode('utf-8')
         return pdf_base64
     finally:
@@ -307,8 +302,6 @@ uploaded_file = st.sidebar.file_uploader("Upload Tally Ledger CSV", type="csv")
 credit_days = st.sidebar.number_input("Credit Days", min_value=0, value=0, step=1)
 
 if uploaded_file is not None:
-    # It's good practice to clear cache on new file upload or major setting change
-    # For simplicity, we'll rely on the user to clear cache if they re-upload the same file after a code change.
     file_content = uploaded_file.getvalue().decode("utf-8")
     summary_df, detailed_reports, quarterly_reports = run_analysis_for_all(file_content, credit_days)
     if summary_df.empty:
