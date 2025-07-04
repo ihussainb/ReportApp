@@ -27,7 +27,6 @@ MODERN_BLUE_HEX = '#2a3f5f'
 LIGHT_GRAY_HEX = '#f0f4f7'
 
 def parse_tally_ledgers(file_content: str) -> (dict, dict):
-    # This robust multi-ledger parser is correct.
     ledgers, ledger_addresses = {}, {}
     current_ledger_rows, current_ledger_name, current_address, headers = [], None, None, []
     lines = file_content.splitlines()
@@ -86,50 +85,40 @@ class AnalysisEngine:
         return q_label, fiscal_year, quarter, sort_date
 
     def classify_sales_and_payments_robust(self, df, credit_days=0):
-        # --- THIS IS THE FINAL, VERIFIED, AND CORRECT CLASSIFICATION LOGIC ---
+        # --- THIS IS THE FINAL, CORRECTED, AND SIMPLIFIED LOGIC ---
         sales, payments = [], []
         df["Parsed_Date"] = pd.to_datetime(df["Date"], format=DATE_FMT, errors="coerce")
         
         for _, row in df.iterrows():
             if pd.isna(row["Parsed_Date"]): continue
             
-            particulars = str(row.get("Particulars", "")).upper()
-            unnamed_col_val = str(row.get(df.columns[2], "")).upper()
-            vch_type = str(row.get("Vch Type", "")).upper()
-            
             try: debit_amt = float(str(row.get("Debit", "0")).replace(",", ""))
             except (ValueError, TypeError): debit_amt = 0.0
             try: credit_amt = float(str(row.get("Credit", "0")).replace(",", ""))
             except (ValueError, TypeError): credit_amt = 0.0
-            
-            # Explicit, structured logic to prevent errors.
-            
-            # Case 1: Opening Balance (A type of receivable)
-            if ("OPENING BALANCE" in particulars or "OPENING BALANCE" in unnamed_col_val) and debit_amt > 0:
-                sales.append({
-                    "date": row["Parsed_Date"], "vch_no": "Opening Balance", "amount": debit_amt,
-                    "due_date": row["Parsed_Date"] + timedelta(days=credit_days),
-                    "remaining": debit_amt, "payments": []
-                })
-                continue
 
-            # Case 2: Credit Note (A type of payment/reduction)
-            if "CREDIT NOTE" in vch_type and credit_amt > 0:
-                payments.append({"date": row["Parsed_Date"], "amount": credit_amt, "vch_no": row["Vch No."]})
-                continue
-
-            # Case 3: All other transactions
+            # If there's a debit, it's a receivable (sale or opening balance).
             if debit_amt > 0:
-                # This is a regular sale
+                particulars = str(row.get("Particulars", "")).upper()
+                unnamed_col_val = str(row.get(df.columns[2], "")).upper()
+                is_opening_balance = "OPENING BALANCE" in particulars or "OPENING BALANCE" in unnamed_col_val
+                vch_no = "Opening Balance" if is_opening_balance else row["Vch No."]
+                
                 sales.append({
-                    "date": row["Parsed_Date"], "vch_no": row["Vch No."], "amount": debit_amt,
+                    "date": row["Parsed_Date"],
+                    "vch_no": vch_no,
+                    "amount": debit_amt,
                     "due_date": row["Parsed_Date"] + timedelta(days=credit_days),
-                    "remaining": debit_amt, "payments": []
+                    "remaining": debit_amt,
+                    "payments": []
                 })
+            # If there's a credit, it's a payment/reduction.
             elif credit_amt > 0:
-                # This is a regular payment (Receipt, Journal Credit, etc.)
-                payments.append({"date": row["Parsed_Date"], "amount": credit_amt, "vch_no": row["Vch No."]})
-        
+                payments.append({
+                    "date": row["Parsed_Date"],
+                    "amount": credit_amt,
+                    "vch_no": row["Vch No."]
+                })
         return sales, payments
 
     def allocate_payments_fifo(self, sales, payments):
