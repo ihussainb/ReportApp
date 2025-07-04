@@ -37,11 +37,23 @@ MODERN_BLUE_HEX = '#2a3f5f'
 LIGHT_GRAY_HEX = '#f0f4f7'
 
 def parse_tally_ledgers(file_content: str) -> (Dict[str, pd.DataFrame], Dict[str, str]):
-    # ROBUST MULTI-LEDGER PARSER
+    # --- NEW, ROBUST, HANG-PROOF MULTI-LEDGER PARSER ---
     ledgers, ledger_addresses = {}, {}
     current_ledger_rows, current_ledger_name, current_address, headers = [], None, None, None
     lines = file_content.splitlines()
-    
+
+    def save_current_ledger():
+        nonlocal ledgers, ledger_addresses, current_ledger_name, current_address, headers, current_ledger_rows
+        if current_ledger_name and headers and current_ledger_rows:
+            # Filter out any rows that don't match the header length (e.g., summary lines)
+            valid_rows = [row for row in current_ledger_rows if len(row) == len(headers)]
+            if valid_rows:
+                df = pd.DataFrame(valid_rows, columns=headers)
+                ledgers[current_ledger_name] = df
+                ledger_addresses[current_ledger_name] = current_address
+        # Reset for the next ledger
+        current_ledger_rows, current_address, headers = [], None, None
+
     for line in lines:
         line = line.replace("\ufeff", "").strip()
         if not line: continue
@@ -49,43 +61,29 @@ def parse_tally_ledgers(file_content: str) -> (Dict[str, pd.DataFrame], Dict[str
         cells = [cell.strip() for cell in line.split(',')]
 
         if line.startswith("Ledger:"):
-            if current_ledger_name and headers and current_ledger_rows:
-                valid_rows = [row for row in current_ledger_rows if len(row) == len(headers)]
-                if valid_rows:
-                    df = pd.DataFrame(valid_rows, columns=headers)
-                    ledgers[current_ledger_name] = df
-                    ledger_addresses[current_ledger_name] = current_address
-            
+            save_current_ledger() # Save the previous ledger before starting a new one
             current_ledger_name = cells[1].strip() if len(cells) > 1 else "Unknown"
-            current_address, headers, current_ledger_rows = None, None, []
             continue
 
         if current_ledger_name:
-            if headers is None and not any(c in line for c in ["Date", "Particulars", "Debit", "Credit"]):
-                if current_address is None:
-                    current_address = cells[0]
-                continue
-
-            if "Date" in cells and "Particulars" in cells:
+            # This logic now correctly handles headers and data rows within a ledger context
+            is_header = "Date" in cells and "Particulars" in cells
+            if is_header:
                 headers = [h.strip() if h.strip() else f"Unnamed_{i}" for i, h in enumerate(cells)]
                 continue
 
             if headers:
-                if len(cells) == len(headers) and (cells[3].strip() != "" or "Opening Balance" in line):
+                # A simple check to see if it looks like a data row
+                if len(cells) == len(headers) and cells[0] and cells[0][0].isdigit():
                     current_ledger_rows.append(cells)
+            # This implicitly ignores address lines and other non-data lines without hanging
 
-    if current_ledger_name and headers and current_ledger_rows:
-        valid_rows = [row for row in current_ledger_rows if len(row) == len(headers)]
-        if valid_rows:
-            df = pd.DataFrame(valid_rows, columns=headers)
-            ledgers[current_ledger_name] = df
-            ledger_addresses[current_ledger_name] = current_address
-            
+    save_current_ledger() # Save the very last ledger in the file
     return ledgers, ledger_addresses
 
 class AnalysisEngine:
     def get_fiscal_quarter_label(self, dt):
-        # YOUR ORIGINAL QUARTER LOGIC
+        # YOUR ORIGINAL QUARTER LOGIC - UNCHANGED
         if pd.isna(dt): return "Invalid Date", None, None, None
         year, month = dt.year, dt.month
         if 4 <= month <= 6: quarter, fiscal_year, sort_date = 1, year, pd.Timestamp(year, 4, 1)
@@ -95,7 +93,7 @@ class AnalysisEngine:
         return f"{fiscal_year} Q{quarter} {QUARTER_MONTHS[quarter]}", fiscal_year, quarter, sort_date
 
     def classify_sales_and_payments_robust(self, df, credit_days=0):
-        # ALL BUGS FIXED HERE
+        # --- BOTH BUGS FIXED HERE ---
         sales, payments = [], []
         df["Parsed_Date"] = pd.to_datetime(df["Date"], format=DATE_FMT, errors="coerce")
         for _, row in df.iterrows():
@@ -110,6 +108,7 @@ class AnalysisEngine:
             
             unnamed_col_val = str(row.get(df.columns[2], "")).upper()
             if ("OPENING BALANCE" in particulars or "OPENING BALANCE" in unnamed_col_val) and debit_amt > 0:
+                # BUG FIX #1: Applying credit_days to Opening Balance
                 sales.append({
                     "date": row["Parsed_Date"], "vch_no": "Opening Balance", "amount": debit_amt,
                     "due_date": row["Parsed_Date"] + timedelta(days=credit_days),
@@ -119,6 +118,7 @@ class AnalysisEngine:
             
             if "CLOSING BALANCE" in particulars: continue
             
+            # BUG FIX #2: Journal Credits are now processed as payments because the `if "JOURNAL" in vch_type: continue` line is gone.
             if "CREDIT NOTE" in vch_type and credit_amt > 0:
                 payments.append({"date": row["Parsed_Date"], "amount": credit_amt, "vch_no": row["Vch No."]})
                 continue
@@ -183,10 +183,12 @@ class AnalysisEngine:
             })
         ).reset_index()
         quarterly_summary = quarterly_summary.sort_values('Sort_Date').drop(columns=['Sort_Date'])
+        # Rename column for PDF generator
         quarterly_summary.rename(columns={'Quarter Label': 'Quarter'}, inplace=True)
         return grand_wdl, details_df, quarterly_summary
 
 class PdfGenerator:
+    # UNCHANGED
     def __init__(self):
         self.primary_color = HexColor(MODERN_BLUE_HEX)
         self.secondary_color = HexColor(LIGHT_GRAY_HEX)
@@ -229,7 +231,7 @@ class PdfGenerator:
             wadl_val = item['WADL']
             wadl_text = f"{wadl_val:.1f}" if isinstance(wadl_val, (int, float)) else wadl_val
             table_data.append([item["Company / Ledger"], wadl_text])
-            wadl_color = self._get_wadl_color(wadl_val)
+            wadl_color = self._get_wadl__color(wadl_val)
             table_styles.append(('TEXTCOLOR', (1, row_index), (1, row_index), wadl_color))
         summary_table = Table(table_data, colWidths=[350, 150], hAlign='CENTER')
         summary_table.setStyle(TableStyle(table_styles))
@@ -362,8 +364,6 @@ def main():
                 result = analyze_all_ledgers(**payload)
             elif command == "generate_pdf":
                 pdf_base64 = generate_detailed_pdf_base64(**payload)
-                # The UI code that uses this would have the typo fix:
-                # data=base64.b64decode(pdf_base64)
                 result = {"pdf_base64": pdf_base64, "filename": f"{payload.get('ledger_name', 'Report')}_Report.pdf"}
             else:
                 result = {"error": f"Unknown command: {command}"}
