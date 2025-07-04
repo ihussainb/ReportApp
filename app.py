@@ -38,47 +38,86 @@ LIGHT_GRAY_HEX = '#f0f4f7'
 
 def parse_tally_ledgers(file_content: str) -> (Dict[str, pd.DataFrame], Dict[str, str]):
     # --- NEW, ROBUST, HANG-PROOF MULTI-LEDGER PARSER ---
+    # This parser correctly handles both multi-ledger files and single-ledger files like 'premier cans.csv'.
     ledgers, ledger_addresses = {}, {}
-    current_ledger_rows, current_ledger_name, current_address, headers = [], None, None, None
     lines = file_content.splitlines()
-
-    def save_current_ledger():
-        nonlocal ledgers, ledger_addresses, current_ledger_name, current_address, headers, current_ledger_rows
-        if current_ledger_name and headers and current_ledger_rows:
-            # Filter out any rows that don't match the header length (e.g., summary lines)
-            valid_rows = [row for row in current_ledger_rows if len(row) == len(headers)]
-            if valid_rows:
-                df = pd.DataFrame(valid_rows, columns=headers)
-                ledgers[current_ledger_name] = df
-                ledger_addresses[current_ledger_name] = current_address
-        # Reset for the next ledger
-        current_ledger_rows, current_address, headers = [], None, None
-
+    
+    ledger_blocks = []
+    current_block = []
+    
+    # First, split the file into blocks based on the "Ledger:" separator
     for line in lines:
-        line = line.replace("\ufeff", "").strip()
-        if not line: continue
-        
-        cells = [cell.strip() for cell in line.split(',')]
+        if line.strip().startswith("Ledger:"):
+            if current_block:
+                ledger_blocks.append(current_block)
+            current_block = [line]
+        else:
+            current_block.append(line)
+    if current_block:
+        ledger_blocks.append(current_block)
 
-        if line.startswith("Ledger:"):
-            save_current_ledger() # Save the previous ledger before starting a new one
-            current_ledger_name = cells[1].strip() if len(cells) > 1 else "Unknown"
-            continue
+    # Now, process each block of text as a potential ledger
+    for block in ledger_blocks:
+        ledger_name = "Unknown Ledger"
+        address = None
+        headers = None
+        data_rows = []
 
-        if current_ledger_name:
-            # This logic now correctly handles headers and data rows within a ledger context
-            is_header = "Date" in cells and "Particulars" in cells
-            if is_header:
+        # Find the ledger name and data within the block
+        for i, line in enumerate(block):
+            line = line.replace("\ufeff", "").strip()
+            if not line: continue
+            
+            cells = [cell.strip() for cell in line.split(',')]
+
+            if line.startswith("Ledger:"):
+                ledger_name = cells[1].strip() if len(cells) > 1 else "Unknown Ledger"
+                # The next line might be the address
+                if i + 1 < len(block) and "Date" not in block[i+1]:
+                    address = block[i+1].split(',')[0].strip()
+                continue
+
+            if "Date" in line and "Particulars" in line:
                 headers = [h.strip() if h.strip() else f"Unnamed_{i}" for i, h in enumerate(cells)]
                 continue
 
             if headers:
-                # A simple check to see if it looks like a data row
-                if len(cells) == len(headers) and cells[0] and cells[0][0].isdigit():
-                    current_ledger_rows.append(cells)
-            # This implicitly ignores address lines and other non-data lines without hanging
+                # Check if it's a valid data row (correct number of columns and starts with a date-like value)
+                if len(cells) == len(headers) and cells[0] and (cells[0][0].isdigit() or "Opening Balance" in line):
+                    data_rows.append(cells)
 
-    save_current_ledger() # Save the very last ledger in the file
+        # If we found data, create the DataFrame
+        if data_rows and headers:
+            df = pd.DataFrame(data_rows, columns=headers)
+            ledgers[ledger_name] = df
+            ledger_addresses[ledger_name] = address
+            
+    # Handle the special case of a single-ledger file where the name is at the end
+    if not ledgers and len(ledger_blocks) == 1:
+        # Re-scan the single block if the standard method failed
+        block = ledger_blocks[0]
+        ledger_name = "Premier Cans" # Fallback name
+        for line in reversed(block):
+             if "Ledger -" in line:
+                 ledger_name = line.split("Ledger -")[1].strip()
+                 break
+        # Now parse it again with the knowledge it's a single block
+        headers = None
+        data_rows = []
+        for line in block:
+            line = line.replace("\ufeff", "").strip()
+            if not line: continue
+            cells = [cell.strip() for cell in line.split(',')]
+            if "Date" in line and "Particulars" in line:
+                headers = [h.strip() if h.strip() else f"Unnamed_{i}" for i, h in enumerate(cells)]
+                continue
+            if headers and len(cells) == len(headers) and cells[0] and (cells[0][0].isdigit() or "Opening Balance" in line):
+                data_rows.append(cells)
+        if data_rows and headers:
+            df = pd.DataFrame(data_rows, columns=headers)
+            ledgers[ledger_name] = df
+            ledger_addresses[ledger_name] = "Not Parsed"
+
     return ledgers, ledger_addresses
 
 class AnalysisEngine:
@@ -118,7 +157,7 @@ class AnalysisEngine:
             
             if "CLOSING BALANCE" in particulars: continue
             
-            # BUG FIX #2: Journal Credits are now processed as payments because the `if "JOURNAL" in vch_type: continue` line is gone.
+            # BUG FIX #2: Journal Credits are now processed as payments
             if "CREDIT NOTE" in vch_type and credit_amt > 0:
                 payments.append({"date": row["Parsed_Date"], "amount": credit_amt, "vch_no": row["Vch No."]})
                 continue
@@ -183,7 +222,6 @@ class AnalysisEngine:
             })
         ).reset_index()
         quarterly_summary = quarterly_summary.sort_values('Sort_Date').drop(columns=['Sort_Date'])
-        # Rename column for PDF generator
         quarterly_summary.rename(columns={'Quarter Label': 'Quarter'}, inplace=True)
         return grand_wdl, details_df, quarterly_summary
 
@@ -231,7 +269,7 @@ class PdfGenerator:
             wadl_val = item['WADL']
             wadl_text = f"{wadl_val:.1f}" if isinstance(wadl_val, (int, float)) else wadl_val
             table_data.append([item["Company / Ledger"], wadl_text])
-            wadl_color = self._get_wadl__color(wadl_val)
+            wadl_color = self._get_wadl_color(wadl_val)
             table_styles.append(('TEXTCOLOR', (1, row_index), (1, row_index), wadl_color))
         summary_table = Table(table_data, colWidths=[350, 150], hAlign='CENTER')
         summary_table.setStyle(TableStyle(table_styles))
