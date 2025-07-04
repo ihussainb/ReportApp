@@ -1,4 +1,4 @@
-# app.py (FINAL VERSION WITH UI FIX)
+# app.py (FINAL VERSION WITH ROBUST DECODER)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -73,7 +73,7 @@ def parse_tally_ledgers(file_content: str) -> (dict, dict):
 
 class AnalysisEngine:
     def get_fiscal_quarter_label(self, dt):
-        # This is the robust quarter label function you requested.
+        # This is the robust quarter label function.
         if pd.isna(dt): return "Invalid Date", None, None, None
         year, month = dt.year, dt.month
         if 4 <= month <= 12:
@@ -285,7 +285,7 @@ def generate_pdf_base64(_file_content, credit_days, ledger_name):
         if chart_path and os.path.exists(chart_path):
             os.remove(chart_path)
 
-# --- STREAMLIT UI (CORRECTED STRUCTURE) ---
+# --- STREAMLIT UI (WITH ROBUST DECODER) ---
 st.set_page_config(layout="wide")
 st.title("📊 Tally Ledger Analysis Engine")
 st.sidebar.header("⚙️ Settings")
@@ -293,9 +293,16 @@ uploaded_file = st.sidebar.file_uploader("Upload Tally Ledger CSV", type="csv")
 credit_days = st.sidebar.number_input("Credit Days", min_value=0, value=0, step=1)
 
 if uploaded_file is not None:
-    # This is the key fix: The file is only read AFTER it has been uploaded.
-    file_content = uploaded_file.getvalue().decode("utf-8")
-    
+    # --- THIS IS THE FINAL FIX FOR THE UNICODE DECODE ERROR ---
+    try:
+        # First, try the most common encoding
+        file_content = uploaded_file.getvalue().decode("utf-8")
+    except UnicodeDecodeError:
+        # If that fails, try a common alternative used by Windows/Tally
+        uploaded_file.seek(0) # Go back to the start of the file to read it again
+        file_content = uploaded_file.getvalue().decode("latin-1")
+    # ----------------------------------------------------------------
+
     summary_df, detailed_reports, quarterly_reports = run_analysis_for_all(file_content, credit_days)
     
     if summary_df.empty:
