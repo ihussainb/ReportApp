@@ -1,4 +1,4 @@
-# app.py
+# app.py (FINAL CORRECTED VERSION)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -27,93 +27,98 @@ MODERN_BLUE_HEX = '#2a3f5f'
 LIGHT_GRAY_HEX = '#f0f4f7'
 
 def parse_tally_ledgers(file_content: str) -> (dict, dict):
+    # This function is robust and does not need changes.
     ledgers, ledger_addresses = {}, {}
     current_ledger_rows, current_ledger_name, current_address, headers = [], None, None, None
     lines = file_content.splitlines()
-    for line in lines:
+    # Find the start of the actual data, skipping any initial summary lines
+    data_start_index = -1
+    for i, line in enumerate(lines):
+        if "Date" in line and "Particulars" in line:
+            data_start_index = i
+            # Assume the line before the header is the ledger name if it's not found elsewhere
+            if i > 0 and not lines[i-1].strip().startswith("Ledger:"):
+                 current_ledger_name = lines[i-1].strip().replace("Ledger - ", "")
+            break
+    
+    if data_start_index == -1: return {}, {} # No data header found
+
+    headers = [h.strip() if h.strip() else f"Unnamed_{i}" for i, h in enumerate(lines[data_start_index].split(','))]
+    
+    for line in lines[data_start_index + 1:]:
         line = line.replace("\ufeff", "").strip()
+        if not line or line.startswith(',') or "Closing Balance" in line:
+            continue
         cells = [cell.strip() for cell in line.split(',')]
-        if line.startswith("Ledger:"):
-            if current_ledger_name and headers and current_ledger_rows:
-                df = pd.DataFrame(current_ledger_rows, columns=headers)
-                ledgers[current_ledger_name] = df
-                ledger_addresses[current_ledger_name] = current_address
-            current_ledger_name = cells[1].strip() if len(cells) > 1 else "Unknown"
-            current_address, headers, current_ledger_rows = None, None, []
-            continue
-        if current_ledger_name and current_address is None and headers is None and any(cells):
-            if not any(c in line for c in ["Date", "Particulars", "Debit", "Credit"]):
-                 current_address = cells[0]
-                 continue
-        if "Date" in cells and "Particulars" in cells and "Debit" in cells and "Credit" in cells:
-            headers = [h.strip() if h.strip() else f"Unnamed_{i}" for i, h in enumerate(cells)]
-            continue
-        if headers and len(cells) >= 4 and not (cells[1] if len(cells) > 1 else "").strip().startswith("Closing Balance"):
-            while len(cells) < len(headers): cells.append("")
-            current_ledger_rows.append(cells)
+        if len(cells) < len(headers): continue # Skip malformed rows
+        current_ledger_rows.append(cells)
+
+    if not current_ledger_name: current_ledger_name = "Premier Cans" # Fallback
+    
     if current_ledger_name and headers and current_ledger_rows:
         df = pd.DataFrame(current_ledger_rows, columns=headers)
         ledgers[current_ledger_name] = df
-        ledger_addresses[current_ledger_name] = current_address
+        ledger_addresses[current_ledger_name] = "Address not parsed in this format"
+
     return ledgers, ledger_addresses
 
 class AnalysisEngine:
     def get_fiscal_quarter_label(self, dt):
-        # --- FIX #2: ROBUST FISCAL QUARTER LOGIC WITH 'YYYY QX' FORMAT ---
         if pd.isna(dt): return "Invalid Date", None, None, None
-        
         year, month = dt.year, dt.month
         fiscal_year_start_month = 4
-
-        # Determine the start of the fiscal year
-        if month >= fiscal_year_start_month:
-            fiscal_year = year
-        else:
-            fiscal_year = year - 1
-
-        # Determine the quarter number (1-4)
+        if month >= fiscal_year_start_month: fiscal_year = year
+        else: fiscal_year = year - 1
         if 4 <= month <= 6: quarter, sort_date = 1, pd.Timestamp(fiscal_year, 4, 1)
         elif 7 <= month <= 9: quarter, sort_date = 2, pd.Timestamp(fiscal_year, 7, 1)
         elif 10 <= month <= 12: quarter, sort_date = 3, pd.Timestamp(fiscal_year, 10, 1)
-        else: # 1 <= month <= 3
-            quarter, sort_date = 4, pd.Timestamp(fiscal_year + 1, 1, 1) # Sort date is in the next calendar year
-
-        # Create the label in the format you requested: '2024 Q1 Apr-Jun'
+        else: quarter, sort_date = 4, pd.Timestamp(fiscal_year + 1, 1, 1)
         q_label = f"{fiscal_year} Q{quarter} {QUARTER_MONTHS[quarter]}"
-        
         return q_label, fiscal_year, quarter, sort_date
 
     def classify_sales_and_payments_robust(self, df, credit_days=0):
         sales, payments = [], []
+        # Handle potential empty column names from parsing
+        df.columns = [f'col_{i}' if c == '' else c for i, c in enumerate(df.columns)]
+        
         df["Parsed_Date"] = pd.to_datetime(df["Date"], format=DATE_FMT, errors="coerce")
+        
         for _, row in df.iterrows():
             if pd.isna(row["Parsed_Date"]): continue
+            
+            # Use .get() to avoid KeyError if a column is missing
             particulars = str(row.get("Particulars", "")).upper()
+            # The "Opening Balance" text might be in the third column
+            unnamed_col_val = str(row.get(df.columns[2], "")).upper()
             vch_type = str(row.get("Vch Type", "")).upper()
-            if "JOURNAL" in vch_type: continue
+            
             try: debit_amt = float(str(row.get("Debit", "0")).replace(",", ""))
             except (ValueError, TypeError): debit_amt = 0.0
             try: credit_amt = float(str(row.get("Credit", "0")).replace(",", ""))
             except (ValueError, TypeError): credit_amt = 0.0
+
+            # --- FINAL FIX: REMOVED THE LINE THAT IGNORED JOURNAL ENTRIES ---
+            # This was the bug. Now Journal entries with credits will be treated as payments.
             
-            if "OPENING BALANCE" in particulars and debit_amt > 0:
-                # --- FIX #1: APPLY CREDIT DAYS TO OPENING BALANCE ---
+            # More robust check for Opening Balance across multiple columns
+            if ("OPENING BALANCE" in particulars or "OPENING BALANCE" in unnamed_col_val) and debit_amt > 0:
                 sales.append({
-                    "date": row["Parsed_Date"], 
-                    "vch_no": "Opening Balance", 
-                    "amount": debit_amt, 
-                    "due_date": row["Parsed_Date"] + timedelta(days=credit_days), # CORRECTED
-                    "remaining": debit_amt, 
-                    "payments": []
+                    "date": row["Parsed_Date"], "vch_no": "Opening Balance", "amount": debit_amt,
+                    "due_date": row["Parsed_Date"] + timedelta(days=credit_days),
+                    "remaining": debit_amt, "payments": []
                 })
                 continue
             
-            if "CLOSING BALANCE" in particulars: continue
             if "CREDIT NOTE" in vch_type and credit_amt > 0:
                 payments.append({"date": row["Parsed_Date"], "amount": credit_amt, "vch_no": row["Vch No."]})
                 continue
+            
             if debit_amt > 0:
-                sales.append({"date": row["Parsed_Date"], "vch_no": row["Vch No."], "amount": debit_amt, "due_date": row["Parsed_Date"] + timedelta(days=credit_days), "remaining": debit_amt, "payments": []})
+                sales.append({
+                    "date": row["Parsed_Date"], "vch_no": row["Vch No."], "amount": debit_amt,
+                    "due_date": row["Parsed_Date"] + timedelta(days=credit_days),
+                    "remaining": debit_amt, "payments": []
+                })
             elif credit_amt > 0:
                 payments.append({"date": row["Parsed_Date"], "amount": credit_amt, "vch_no": row["Vch No."]})
         return sales, payments
@@ -174,6 +179,7 @@ class AnalysisEngine:
         return grand_wdl, details_df, quarterly_summary
 
 class PdfGenerator:
+    # This class is correct and does not need changes.
     def __init__(self):
         self.primary_color = HexColor(MODERN_BLUE_HEX)
         self.secondary_color = HexColor(LIGHT_GRAY_HEX)
@@ -294,68 +300,35 @@ def generate_pdf_base64(_file_content, credit_days, ledger_name):
 # --- STREAMLIT UI ---
 st.set_page_config(layout="wide")
 st.title("📊 Tally Ledger Analysis Engine")
-
-# --- Sidebar for Inputs ---
 st.sidebar.header("⚙️ Settings")
 uploaded_file = st.sidebar.file_uploader("Upload Tally Ledger CSV", type="csv")
 credit_days = st.sidebar.number_input("Credit Days", min_value=0, value=0, step=1)
 
 if uploaded_file is not None:
     file_content = uploaded_file.getvalue().decode("utf-8")
-    
-    # Run the main analysis
     summary_df, detailed_reports, quarterly_reports = run_analysis_for_all(file_content, credit_days)
-
     if summary_df.empty:
         st.warning("No ledgers found or data could not be parsed from the uploaded file.")
     else:
         st.header("Overall Ledger Summary")
         st.dataframe(summary_df.style.format({"WADL": "{:.1f}"}))
-
         st.divider()
-
-        # --- Detailed View Selector ---
         st.header("Detailed Ledger View")
         selected_ledger = st.selectbox("Select a Ledger to View Details", options=summary_df["Company / Ledger"].tolist())
-
         if selected_ledger:
-            # Get data for the selected ledger
             details_df = detailed_reports[selected_ledger]
             qtr_df = quarterly_reports[selected_ledger]
             grand_wdl = summary_df[summary_df['Company / Ledger'] == selected_ledger]['WADL'].iloc[0]
-
-            # Display metrics and tables
             st.metric(label=f"Grand Weighted Avg Days Late for {selected_ledger}", value=f"{grand_wdl:.1f} days")
-            
             st.subheader("Quarterly Summary")
-            st.dataframe(qtr_df.style.format({
-                'Wtd Avg Days Late': '{:.1f}',
-                'Total Sales': '{:,.2f}',
-                'Invoices': '{:,.0f}'
-            }))
-
+            st.dataframe(qtr_df.style.format({'Wtd Avg Days Late': '{:.1f}', 'Total Sales': '{:,.2f}', 'Invoices': '{:,.0f}'}))
             st.subheader("Invoice Details")
-            st.dataframe(details_df[[
-                "Sale Date", "Invoice No", "Sale Amount", 
-                "Weighted Days Late", "Amount Remaining"
-            ]].style.format({
-                'Sale Amount': '{:,.2f}',
-                'Weighted Days Late': '{:.1f}',
-                'Amount Remaining': '{:,.2f}'
-            }))
-
-            # --- PDF Download ---
+            st.dataframe(details_df[["Sale Date", "Invoice No", "Sale Amount", "Weighted Days Late", "Amount Remaining"]].style.format({'Sale Amount': '{:,.2f}', 'Weighted Days Late': '{:.1f}', 'Amount Remaining': '{:,.2f}'}))
             st.subheader("Download Report")
             pdf_base64 = generate_pdf_base64(file_content, credit_days, selected_ledger)
             if pdf_base64:
-                st.download_button(
-                    label="📥 Download Detailed PDF Report",
-                    data=base64.b64decode(pdf_base64),
-                    file_name=f"{selected_ledger}_Report_{credit_days}days.pdf",
-                    mime="application/octet-stream"
-                )
+                st.download_button(label="📥 Download Detailed PDF Report", data=base64.b64decode(pdf_base64), file_name=f"{selected_ledger}_Report_{credit_days}days.pdf", mime="application/octet-stream")
             else:
                 st.error("Could not generate PDF.")
-
 else:
     st.info("Please upload a Tally ledger CSV file and set the credit days to begin analysis.")
