@@ -1,4 +1,4 @@
-# app.py (FINAL VERSION - ROBUST MULTI-LEDGER PARSING RESTORED)
+# app.py (FINAL, CORRECTED, AND ROBUST VERSION)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -28,9 +28,9 @@ LIGHT_GRAY_HEX = '#f0f4f7'
 
 def parse_tally_ledgers(file_content: str) -> (dict, dict):
     # --- RESTORED AND ROBUST MULTI-LEDGER PARSER ---
-    # This version correctly handles multiple ledgers in one file and ignores summary lines.
+    # This version correctly handles multiple ledgers and ignores summary lines.
     ledgers, ledger_addresses = {}, {}
-    current_ledger_rows, current_ledger_name, current_address, headers = [], None, None, None
+    current_ledger_rows, current_ledger_name, current_address, headers = [], None, None, []
     lines = file_content.splitlines()
     
     for line in lines:
@@ -40,37 +40,33 @@ def parse_tally_ledgers(file_content: str) -> (dict, dict):
         cells = [cell.strip() for cell in line.split(',')]
 
         if line.startswith("Ledger:"):
-            # If we were processing a previous ledger, save it first.
             if current_ledger_name and headers and current_ledger_rows:
                 df = pd.DataFrame(current_ledger_rows, columns=headers)
                 ledgers[current_ledger_name] = df
                 ledger_addresses[current_ledger_name] = current_address
             
-            # Start a new ledger
             current_ledger_name = cells[1].strip() if len(cells) > 1 else "Unknown"
             current_address, headers, current_ledger_rows = None, None, []
             continue
 
         if current_ledger_name:
-            # Capture address line which comes after the ledger name
-            if headers is None and not any(c in line for c in ["Date", "Particulars", "Debit", "Credit"]):
-                if current_address is None: # Capture only the first such line as address
+            if not headers and not any(c in line for c in ["Date", "Particulars", "Debit", "Credit"]):
+                if current_address is None:
                     current_address = cells[0]
                 continue
 
-            # Detect header row
             if "Date" in cells and "Particulars" in cells:
                 headers = [h.strip() if h.strip() else f"Unnamed_{i}" for i, h in enumerate(cells)]
                 continue
 
-            # Process data rows
             if headers:
-                # This condition is key to filtering out summary/malformed lines
-                # It checks for a minimum length and ensures a Voucher Type exists.
-                if len(cells) == len(headers) and cells[3].strip() != "":
+                # This is the key check to only add valid data rows.
+                # It stops at summary lines like "Closing Balance" or total lines.
+                if "Closing Balance" in line or not cells[0]:
+                    continue
+                if len(cells) == len(headers):
                     current_ledger_rows.append(cells)
 
-    # Save the very last ledger in the file
     if current_ledger_name and headers and current_ledger_rows:
         df = pd.DataFrame(current_ledger_rows, columns=headers)
         ledgers[current_ledger_name] = df
@@ -127,7 +123,6 @@ class AnalysisEngine:
                     "remaining": debit_amt, "payments": []
                 })
             elif credit_amt > 0:
-                # This now correctly captures Receipts, Journal Credits, etc.
                 payments.append({"date": row["Parsed_Date"], "amount": credit_amt, "vch_no": row["Vch No."]})
         return sales, payments
 
@@ -187,7 +182,6 @@ class AnalysisEngine:
         return grand_wdl, details_df, quarterly_summary
 
 class PdfGenerator:
-    # This class is correct and does not need changes.
     def __init__(self):
         self.primary_color = HexColor(MODERN_BLUE_HEX)
         self.secondary_color = HexColor(LIGHT_GRAY_HEX)
@@ -313,6 +307,8 @@ uploaded_file = st.sidebar.file_uploader("Upload Tally Ledger CSV", type="csv")
 credit_days = st.sidebar.number_input("Credit Days", min_value=0, value=0, step=1)
 
 if uploaded_file is not None:
+    # It's good practice to clear cache on new file upload or major setting change
+    # For simplicity, we'll rely on the user to clear cache if they re-upload the same file after a code change.
     file_content = uploaded_file.getvalue().decode("utf-8")
     summary_df, detailed_reports, quarterly_reports = run_analysis_for_all(file_content, credit_days)
     if summary_df.empty:
@@ -335,7 +331,7 @@ if uploaded_file is not None:
             st.subheader("Download Report")
             pdf_base64 = generate_pdf_base64(file_content, credit_days, selected_ledger)
             if pdf_base64:
-                st.download_button(label="📥 Download Detailed PDF Report", data=base6.b64decode(pdf_base64), file_name=f"{selected_ledger}_Report_{credit_days}days.pdf", mime="application/octet-stream")
+                st.download_button(label="📥 Download Detailed PDF Report", data=base64.b64decode(pdf_base64), file_name=f"{selected_ledger}_Report_{credit_days}days.pdf", mime="application/octet-stream")
             else:
                 st.error("Could not generate PDF.")
 else:
