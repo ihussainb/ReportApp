@@ -27,27 +27,32 @@ LIGHT_GRAY_HEX = '#f0f4f7'
 # --- Core Analysis Engine ---
 class AnalysisEngine:
     def get_fiscal_quarter_label(self, dt):
-    if pd.isna(dt): return "Invalid Date", None, None, None
-    
-    year, month = dt.year, dt.month
+        """
+        Correctly assigns a fiscal quarter using the standard YYYY-YY format.
+        e.g., Apr 2024 is in '2024-25 Q1'. Feb 2025 is in '2024-25 Q4'.
+        This is the definitive, robust, and unambiguous solution.
+        """
+        if pd.isna(dt): return "Invalid Date", None, None, None
+        
+        year, month = dt.year, dt.month
 
-    # Determine the STARTING year of the fiscal period
-    if month >= 4: # For dates in Apr-Dec, the fiscal year started in the same calendar year
-        fiscal_year_start = year
-    else: # For dates in Jan-Mar, the fiscal year started in the PREVIOUS calendar year
-        fiscal_year_start = year - 1
+        # Determine the STARTING year of the fiscal period
+        if month >= 4: # For dates in Apr-Dec, the fiscal year started in the same calendar year
+            fiscal_year_start = year
+        else: # For dates in Jan-Mar, the fiscal year started in the PREVIOUS calendar year
+            fiscal_year_start = year - 1
 
-    # Determine the quarter number
-    if 4 <= month <= 6: quarter, sort_date = 1, pd.Timestamp(year, 4, 1)
-    elif 7 <= month <= 9: quarter, sort_date = 2, pd.Timestamp(year, 7, 1)
-    elif 10 <= month <= 12: quarter, sort_date = 3, pd.Timestamp(year, 10, 1)
-    else: quarter, sort_date = 4, pd.Timestamp(year, 1, 1)
-    
-    # Create the unambiguous YYYY-YY label
-    fiscal_year_label = f"{fiscal_year_start}-{str(fiscal_year_start + 1)[-2:]}"
-    q_label = f"{fiscal_year_label} Q{quarter} {QUARTER_MONTHS[quarter]}"
-    
-    return q_label, fiscal_year_start, quarter, sort_date
+        # Determine the quarter number
+        if 4 <= month <= 6: quarter, sort_date = 1, pd.Timestamp(year, 4, 1)
+        elif 7 <= month <= 9: quarter, sort_date = 2, pd.Timestamp(year, 7, 1)
+        elif 10 <= month <= 12: quarter, sort_date = 3, pd.Timestamp(year, 10, 1)
+        else: quarter, sort_date = 4, pd.Timestamp(year, 1, 1)
+        
+        # Create the unambiguous YYYY-YY label
+        fiscal_year_label = f"{fiscal_year_start}-{str(fiscal_year_start + 1)[-2:]}"
+        q_label = f"{fiscal_year_label} Q{quarter} {QUARTER_MONTHS[quarter]}"
+        
+        return q_label, fiscal_year_start, quarter, sort_date
 
     def classify_sales_and_payments_robust(self, df, credit_days=0):
         sales, payments = [], []
@@ -277,7 +282,6 @@ with st.sidebar:
     credit_days = st.number_input("Credit Days", min_value=0, max_value=365, value=30, step=1)
 
 if uploaded_file is not None:
-    # --- ENCODING FIX START ---
     file_content = None
     file_bytes = uploaded_file.getvalue()
     encodings_to_try = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252']
@@ -291,7 +295,6 @@ if uploaded_file is not None:
     if file_content is None:
         st.error("Fatal Error: Could not decode the uploaded file. Please re-save it with UTF-8 encoding and try again.")
         st.stop()
-    # --- ENCODING FIX END ---
     
     summary_df, detailed_reports, quarterly_reports = run_analysis_for_all(file_content, credit_days)
 
@@ -350,8 +353,6 @@ if uploaded_file is not None:
             for q_label in qtr_df['Quarter Label']:
                 with st.expander(f"View Invoices for {q_label}"):
                     q_invoices = details_df_sorted[details_df_sorted['Quarter Label'] == q_label]
-                    # --- KEYERROR FIX START ---
-                    # The column name was "Weighted Days Late", not "Wtd Days Late"
                     st.dataframe(q_invoices[[
                         "Sale Date", "Invoice No", "Sale Amount", 
                         "Weighted Days Late", "Amount Remaining"
@@ -360,7 +361,6 @@ if uploaded_file is not None:
                         "Weighted Days Late": "{:.1f}",
                         "Amount Remaining": "{:,.2f}"
                     }), use_container_width=True)
-                    # --- KEYERROR FIX END ---
     else:
         st.warning("No ledgers found in the uploaded file or an error occurred during parsing.")
 else:
