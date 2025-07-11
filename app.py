@@ -28,31 +28,30 @@ LIGHT_GRAY_HEX = '#f0f4f7'
 class AnalysisEngine:
     def get_fiscal_quarter_label(self, dt):
         """
-        Correctly assigns a fiscal quarter using the standard YYYY-YY format.
-        e.g., Apr 2024 is in '2024-25 Q1'. Feb 2025 is in '2024-25 Q4'.
-        This is the definitive, robust, and unambiguous solution.
+        Labels the fiscal year by the calendar year it starts in.
+        e.g., Apr 2024 is '2024 Q1'. Feb 2025 is '2024 Q4'.
         """
         if pd.isna(dt): return "Invalid Date", None, None, None
         
         year, month = dt.year, dt.month
 
-        # Determine the STARTING year of the fiscal period
-        if month >= 4: # For dates in Apr-Dec, the fiscal year started in the same calendar year
-            fiscal_year_start = year
-        else: # For dates in Jan-Mar, the fiscal year started in the PREVIOUS calendar year
-            fiscal_year_start = year - 1
+        # --- FISCAL YEAR FORMATTING FIX ---
+        # Determine the fiscal year label based on its starting year.
+        if month >= 4: # For dates in Apr-Dec, the fiscal year started in the same calendar year.
+            fiscal_year_label = year
+        else: # For dates in Jan-Mar, the fiscal year started in the PREVIOUS calendar year.
+            fiscal_year_label = year - 1
 
-        # Determine the quarter number
+        # Determine the quarter number and a date for sorting purposes
         if 4 <= month <= 6: quarter, sort_date = 1, pd.Timestamp(year, 4, 1)
         elif 7 <= month <= 9: quarter, sort_date = 2, pd.Timestamp(year, 7, 1)
         elif 10 <= month <= 12: quarter, sort_date = 3, pd.Timestamp(year, 10, 1)
         else: quarter, sort_date = 4, pd.Timestamp(year, 1, 1)
         
-        # Create the unambiguous YYYY-YY label
-        fiscal_year_label = f"{fiscal_year_start}-{str(fiscal_year_start + 1)[-2:]}"
+        # Create the final label in the requested format (e.g., "2024 Q4 Jan-Mar")
         q_label = f"{fiscal_year_label} Q{quarter} {QUARTER_MONTHS[quarter]}"
         
-        return q_label, fiscal_year_start, quarter, sort_date
+        return q_label, fiscal_year_label, quarter, sort_date
 
     def classify_sales_and_payments_robust(self, df, credit_days=0):
         sales, payments = [], []
