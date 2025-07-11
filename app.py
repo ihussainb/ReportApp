@@ -27,16 +27,32 @@ LIGHT_GRAY_HEX = '#f0f4f7'
 # --- Core Analysis Engine ---
 class AnalysisEngine:
     def get_fiscal_quarter_label(self, dt):
-        if pd.isna(dt): return "Invalid Date", None, None, None
-        year, month = dt.year, dt.month
-        if month >= 4: fiscal_year = year + 1
-        else: fiscal_year = year
-        if 4 <= month <= 6: quarter, sort_date = 1, pd.Timestamp(year, 4, 1)
-        elif 7 <= month <= 9: quarter, sort_date = 2, pd.Timestamp(year, 7, 1)
-        elif 10 <= month <= 12: quarter, sort_date = 3, pd.Timestamp(year, 10, 1)
-        else: quarter, sort_date = 4, pd.Timestamp(year, 1, 1)
-        q_label = f"{fiscal_year} Q{quarter} {QUARTER_MONTHS[quarter]}"
-        return q_label, fiscal_year, quarter, sort_date
+    """
+    Correctly assigns a fiscal quarter using the standard YYYY-YY format.
+    e.g., Apr 2024 is in '2024-25 Q1'. Feb 2025 is in '2024-25 Q4'.
+    This is the definitive, robust, and unambiguous solution.
+    """
+    if pd.isna(dt): return "Invalid Date", None, None, None
+    
+    year, month = dt.year, dt.month
+
+    # Determine the STARTING year of the fiscal period
+    if month >= 4: # For dates in Apr-Dec, the fiscal year started in the same calendar year
+        fiscal_year_start = year
+    else: # For dates in Jan-Mar, the fiscal year started in the PREVIOUS calendar year
+        fiscal_year_start = year - 1
+
+    # Determine the quarter number
+    if 4 <= month <= 6: quarter, sort_date = 1, pd.Timestamp(year, 4, 1)
+    elif 7 <= month <= 9: quarter, sort_date = 2, pd.Timestamp(year, 7, 1)
+    elif 10 <= month <= 12: quarter, sort_date = 3, pd.Timestamp(year, 10, 1)
+    else: quarter, sort_date = 4, pd.Timestamp(year, 1, 1)
+    
+    # Create the unambiguous YYYY-YY label
+    fiscal_year_label = f"{fiscal_year_start}-{str(fiscal_year_start + 1)[-2:]}"
+    q_label = f"{fiscal_year_label} Q{quarter} {QUARTER_MONTHS[quarter]}"
+    
+    return q_label, fiscal_year_start, quarter, sort_date
 
     def classify_sales_and_payments_robust(self, df, credit_days=0):
         sales, payments = [], []
