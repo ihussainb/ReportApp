@@ -27,11 +27,6 @@ LIGHT_GRAY_HEX = '#f0f4f7'
 # --- Core Analysis Engine ---
 class AnalysisEngine:
     def get_fiscal_quarter_label(self, dt):
-    """
-    Correctly assigns a fiscal quarter using the standard YYYY-YY format.
-    e.g., Apr 2024 is in '2024-25 Q1'. Feb 2025 is in '2024-25 Q4'.
-    This is the definitive, robust, and unambiguous solution.
-    """
     if pd.isna(dt): return "Invalid Date", None, None, None
     
     year, month = dt.year, dt.month
