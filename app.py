@@ -1,4 +1,4 @@
-# FINAL CORRECTED CODE - app.py
+# FINAL, ROBUST, AND CORRECTED CODE - app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -27,28 +27,14 @@ LIGHT_GRAY_HEX = '#f0f4f7'
 # --- Core Analysis Engine ---
 class AnalysisEngine:
     def get_fiscal_quarter_label(self, dt):
-        """
-        Correctly assigns a fiscal quarter and year.
-        An April-March fiscal year is named by the calendar year it ends in.
-        e.g., Feb 2025 is in Q4 of the fiscal year ending March 31, 2025.
-        """
         if pd.isna(dt): return "Invalid Date", None, None, None
-        
         year, month = dt.year, dt.month
-
-        # --- FISCAL YEAR FIX ---
-        # The fiscal year is named by the year it ENDS in.
-        if month >= 4: # Apr-Dec
-            fiscal_year = year + 1
-        else: # Jan-Mar
-            fiscal_year = year
-
+        if month >= 4: fiscal_year = year + 1
+        else: fiscal_year = year
         if 4 <= month <= 6: quarter, sort_date = 1, pd.Timestamp(year, 4, 1)
         elif 7 <= month <= 9: quarter, sort_date = 2, pd.Timestamp(year, 7, 1)
         elif 10 <= month <= 12: quarter, sort_date = 3, pd.Timestamp(year, 10, 1)
         else: quarter, sort_date = 4, pd.Timestamp(year, 1, 1)
-        
-        # Label uses the fiscal year it ends in. e.g., "2025 Q4 Jan-Mar"
         q_label = f"{fiscal_year} Q{quarter} {QUARTER_MONTHS[quarter]}"
         return q_label, fiscal_year, quarter, sort_date
 
@@ -62,13 +48,10 @@ class AnalysisEngine:
             except (ValueError, TypeError): debit_amt = 0.0
             try: credit_amt = float(str(row.get("Credit", "0")).replace(",", ""))
             except (ValueError, TypeError): credit_amt = 0.0
-
             if "CLOSING BALANCE" in particulars: continue
-            
             if credit_amt > 0:
                 payments.append({"date": row["Parsed_Date"], "amount": credit_amt, "vch_no": row["Vch No."]})
                 continue
-
             if debit_amt > 0:
                 is_opening_balance = "OPENING BALANCE" in particulars
                 sales.append({
@@ -101,7 +84,6 @@ class AnalysisEngine:
         sales, payments = self.classify_sales_and_payments_robust(df, credit_days)
         if not sales: return 0, pd.DataFrame(), pd.DataFrame()
         self.allocate_payments_fifo(sales, payments)
-        
         invoice_details = []
         for sale in sales:
             if sale['amount'] == 0: continue
@@ -111,9 +93,7 @@ class AnalysisEngine:
                 days_late = (payment['pay_date'] - sale['due_date']).days
                 invoice_weighted_impact += payment['pay_amt'] * days_late
                 total_paid_on_invoice += payment['pay_amt']
-            
             weighted_days_for_invoice = invoice_weighted_impact / total_paid_on_invoice if total_paid_on_invoice > 0 else 0
-            
             q_label, f_year, f_q, q_sort_date = self.get_fiscal_quarter_label(sale['date'])
             invoice_details.append({
                 "Sale_Date_DT": sale['date'], "Sale Date": sale['date'].strftime(DATE_FMT), "Invoice No": sale['vch_no'],
@@ -122,31 +102,19 @@ class AnalysisEngine:
                 "Amount Remaining": round(sale['remaining'], 2),
                 "Quarter Label": q_label, "Fiscal Year": f_year, "Fiscal Quarter": f_q, "Quarter Sort Date": q_sort_date
             })
-        
         if not invoice_details: return 0, pd.DataFrame(), pd.DataFrame()
-        
         details_df = pd.DataFrame(invoice_details)
-
-        # --- WADL CALCULATION FIX START ---
-        # For summary calculations, we filter out invoices that are completely unpaid.
-        # This ensures the summary WADL shifts correctly by the credit period.
         paid_invoices_df = details_df[details_df['Amount Remaining'] < details_df['Sale Amount']].copy()
-        
         if not paid_invoices_df.empty:
             paid_total_sale_amount = paid_invoices_df['Sale Amount'].sum()
             paid_total_weighted_impact = (paid_invoices_df['Weighted Days Late'] * paid_invoices_df['Sale Amount']).sum()
             grand_wdl = round(paid_total_weighted_impact / paid_total_sale_amount, 1) if paid_total_sale_amount > 0 else 0
-
             quarterly_summary_calculated = paid_invoices_df.groupby('Quarter Label').apply(
-                lambda g: pd.Series({
-                    'Wtd Avg Days Late': np.average(g['Weighted Days Late'], weights=g['Sale Amount']),
-                })
+                lambda g: pd.Series({'Wtd Avg Days Late': np.average(g['Weighted Days Late'], weights=g['Sale Amount'])})
             ).reset_index()
         else:
             grand_wdl = 0
             quarterly_summary_calculated = pd.DataFrame(columns=['Quarter Label', 'Wtd Avg Days Late'])
-
-        # Create a base summary with all quarters and their total sales/invoice counts from the original data
         quarterly_summary_base = details_df.groupby('Quarter Label').apply(
             lambda g: pd.Series({
                 'Total Sales': g['Sale Amount'].sum(),
@@ -154,17 +122,12 @@ class AnalysisEngine:
                 'Sort_Date': g['Quarter Sort Date'].iloc[0]
             })
         ).reset_index()
-
-        # Merge the calculated WADL (from paid invoices) with the base summary (of all invoices)
         quarterly_summary = pd.merge(quarterly_summary_base, quarterly_summary_calculated, on='Quarter Label', how='left')
         quarterly_summary['Wtd Avg Days Late'] = quarterly_summary['Wtd Avg Days Late'].fillna(0)
         quarterly_summary = quarterly_summary.sort_values('Sort_Date').drop(columns=['Sort_Date'])
-        # --- WADL CALCULATION FIX END ---
-        
-        # Return the new summary numbers, but the ORIGINAL, UNFILTERED details_df for display
         return grand_wdl, details_df, quarterly_summary
 
-# --- PDF Generator (No changes needed) ---
+# --- PDF Generator ---
 class PdfGenerator:
     def __init__(self):
         self.primary_color = HexColor(MODERN_BLUE_HEX)
@@ -225,7 +188,7 @@ class PdfGenerator:
             q_wdl = qtr_df[qtr_df['Quarter Label'] == q_label]['Wtd Avg Days Late'].iloc[0]
             elements.append(Paragraph(f"{q_label}: Weighted Avg Days Late = {q_wdl:.1f}", styles['LeftH3']))
             q_invoices = details_df_sorted[details_df_sorted['Quarter Label'] == q_label]
-            invoice_data = [["Sale Date", "Invoice No", "Sale Amount", "Wtd Days Late", "Amount Remaining"]]
+            invoice_data = [["Sale Date", "Invoice No", "Sale Amount", "Weighted Days Late", "Amount Remaining"]]
             for _, row in q_invoices.iterrows():
                 invoice_data.append([row["Sale Date"], row["Invoice No"], f"{row['Sale Amount']:,.2f}", f"{row['Weighted Days Late']:.1f}", f"{row['Amount Remaining']:,.2f}"])
             invoice_table = Table(invoice_data, colWidths=[90, 140, 110, 110, 120])
@@ -241,7 +204,7 @@ class PdfGenerator:
         buffer.seek(0)
         return buffer
 
-# --- Data Parsing and Main App Logic (No changes needed below this line) ---
+# --- Data Parsing and Main App Logic ---
 def parse_tally_ledgers(file_content: str) -> (dict, dict):
     ledgers, ledger_addresses = {}, {}
     current_ledger_rows, current_ledger_name, current_address, headers = [], None, None, None
@@ -303,7 +266,21 @@ with st.sidebar:
     credit_days = st.number_input("Credit Days", min_value=0, max_value=365, value=30, step=1)
 
 if uploaded_file is not None:
-    file_content = uploaded_file.getvalue().decode("utf-8")
+    # --- ENCODING FIX START ---
+    file_content = None
+    file_bytes = uploaded_file.getvalue()
+    encodings_to_try = ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252']
+    for encoding in encodings_to_try:
+        try:
+            file_content = file_bytes.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    
+    if file_content is None:
+        st.error("Fatal Error: Could not decode the uploaded file. Please re-save it with UTF-8 encoding and try again.")
+        st.stop()
+    # --- ENCODING FIX END ---
     
     summary_df, detailed_reports, quarterly_reports = run_analysis_for_all(file_content, credit_days)
 
@@ -362,14 +339,17 @@ if uploaded_file is not None:
             for q_label in qtr_df['Quarter Label']:
                 with st.expander(f"View Invoices for {q_label}"):
                     q_invoices = details_df_sorted[details_df_sorted['Quarter Label'] == q_label]
+                    # --- KEYERROR FIX START ---
+                    # The column name was "Weighted Days Late", not "Wtd Days Late"
                     st.dataframe(q_invoices[[
                         "Sale Date", "Invoice No", "Sale Amount", 
-                        "Wtd Days Late", "Amount Remaining"
+                        "Weighted Days Late", "Amount Remaining"
                     ]].style.format({
                         "Sale Amount": "{:,.2f}",
-                        "Wtd Days Late": "{:.1f}",
+                        "Weighted Days Late": "{:.1f}",
                         "Amount Remaining": "{:,.2f}"
                     }), use_container_width=True)
+                    # --- KEYERROR FIX END ---
     else:
         st.warning("No ledgers found in the uploaded file or an error occurred during parsing.")
 else:
