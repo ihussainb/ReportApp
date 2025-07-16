@@ -1,4 +1,4 @@
-# FINAL, ROBUST, AND CORRECTED CODE - V2
+# FINAL, ROBUST, AND CORRECTED CODE - V8 (Definitive Parser)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -27,29 +27,14 @@ LIGHT_GRAY_HEX = '#f0f4f7'
 # --- Core Analysis Engine ---
 class AnalysisEngine:
     def get_fiscal_quarter_label(self, dt):
-        """
-        Labels the quarter using the transaction's own CALENDAR YEAR.
-        e.g., Apr 2024 is '2024 Q1'. Feb 2025 is '2025 Q4'.
-        This matches the user's specific formatting request.
-        """
         if pd.isna(dt): return "Invalid Date", None, None, None
-        
         year, month = dt.year, dt.month
-
-        # --- CALENDAR YEAR FORMATTING FIX ---
-        # The label's year is the direct calendar year of the date.
         fiscal_year_label = year
-
-        # Determine the quarter number based on an April-March cycle
         if 4 <= month <= 6: quarter, sort_date = 1, pd.Timestamp(year, 4, 1)
         elif 7 <= month <= 9: quarter, sort_date = 2, pd.Timestamp(year, 7, 1)
         elif 10 <= month <= 12: quarter, sort_date = 3, pd.Timestamp(year, 10, 1)
-        else: # Jan-Mar
-            quarter, sort_date = 4, pd.Timestamp(year, 1, 1)
-        
-        # Create the final label, e.g., "2024 Q1 Apr-Jun", "2025 Q4 Jan-Mar"
+        else: quarter, sort_date = 4, pd.Timestamp(year, 1, 1)
         q_label = f"{fiscal_year_label} Q{quarter} {QUARTER_MONTHS[quarter]}"
-        
         return q_label, fiscal_year_label, quarter, sort_date
 
     def classify_sales_and_payments_robust(self, df, credit_days=0):
@@ -57,20 +42,20 @@ class AnalysisEngine:
         df["Parsed_Date"] = pd.to_datetime(df["Date"], format=DATE_FMT, errors="coerce")
         for _, row in df.iterrows():
             if pd.isna(row["Parsed_Date"]): continue
-            particulars = str(row.get("Particulars", "")).upper()
+            description = str(row.get("Description", "")).upper()
             try: debit_amt = float(str(row.get("Debit", "0")).replace(",", ""))
             except (ValueError, TypeError): debit_amt = 0.0
             try: credit_amt = float(str(row.get("Credit", "0")).replace(",", ""))
             except (ValueError, TypeError): credit_amt = 0.0
-            if "CLOSING BALANCE" in particulars: continue
+            if "CLOSING BALANCE" in description: continue
             if credit_amt > 0:
-                payments.append({"date": row["Parsed_Date"], "amount": credit_amt, "vch_no": row["Vch No."]})
+                payments.append({"date": row["Parsed_Date"], "amount": credit_amt, "vch_no": row.get("Vch No.", "")})
                 continue
             if debit_amt > 0:
-                is_opening_balance = "OPENING BALANCE" in particulars
+                is_opening_balance = "OPENING BALANCE" in description
                 sales.append({
                     "date": row["Parsed_Date"],
-                    "vch_no": "Opening Balance" if is_opening_balance else row["Vch No."],
+                    "vch_no": "Opening Balance" if is_opening_balance else row.get("Vch No.", ""),
                     "amount": debit_amt,
                     "due_date": row["Parsed_Date"] + timedelta(days=credit_days),
                     "remaining": debit_amt,
@@ -219,38 +204,64 @@ class PdfGenerator:
         return buffer
 
 # --- Data Parsing and Main App Logic ---
-def parse_tally_ledgers(file_content: str) -> (dict, dict):
-    ledgers, ledger_addresses = {}, {}
-    current_ledger_rows, current_ledger_name, current_address, headers = [], None, None, None
-    lines = file_content.splitlines()
-    for line in lines:
-        line = line.replace("\ufeff", "").strip()
-        if not line: continue
+def _parse_ledger_block(block_lines):
+    """Helper function to parse a single, self-contained block of ledger text."""
+    if not block_lines: return None, None
+    ledger_name = "Unknown Ledger"
+    header_row, data_rows, header_idx = [], [], -1
+    for i, line in enumerate(block_lines):
+        if "Date" in line and "Particulars" in line:
+            header_idx = i
+            break
+    if header_idx == -1: return None, None
+    for i in range(header_idx):
+        line = block_lines[i].strip()
+        if line and ',' not in line and ' to ' not in line.lower() and not line.lower().startswith('1-apr-'):
+            ledger_name = line
+            break
+    if block_lines[0].startswith("Ledger:"):
+        ledger_name = block_lines[0].split('1-Apr-')[0].replace("Ledger:", "").strip()
+    raw_headers = [h.strip() for h in block_lines[header_idx].split(',')]
+    try:
+        p_index = raw_headers.index('Particulars')
+        if p_index + 1 < len(raw_headers) and raw_headers[p_index + 1] == '':
+            raw_headers[p_index + 1] = 'Description'
+    except ValueError: pass
+    header_row = raw_headers
+    for line in block_lines[header_idx + 1:]:
         cells = [cell.strip() for cell in line.split(',')]
-        if line.startswith("Ledger:"):
-            if current_ledger_name and headers and current_ledger_rows:
-                df = pd.DataFrame(current_ledger_rows, columns=headers)
-                ledgers[current_ledger_name] = df
-                ledger_addresses[current_ledger_name] = current_address
-            current_ledger_name = cells[1].strip() if len(cells) > 1 else "Unknown"
-            current_address, headers, current_ledger_rows = None, None, []
-            continue
-        if current_ledger_name and current_address is None and headers is None and any(cells):
-            if not any(c in line for c in ["Date", "Particulars", "Debit", "Credit"]):
-                 current_address = cells[0]
-                 continue
-        if "Date" in cells and "Particulars" in cells and "Debit" in cells and "Credit" in cells:
-            headers = [h.strip() if h.strip() else f"Unnamed_{i}" for i, h in enumerate(cells)]
-            continue
-        if headers and len(cells) >= 4 and not (cells[1] if len(cells) > 1 else "").strip().startswith(("Closing Balance", "Opening Balance")):
-             if not all(c == '' for c in cells):
-                while len(cells) < len(headers): cells.append("")
-                current_ledger_rows.append(cells)
-    if current_ledger_name and headers and current_ledger_rows:
-        df = pd.DataFrame(current_ledger_rows, columns=headers)
-        ledgers[current_ledger_name] = df
-        ledger_addresses[current_ledger_name] = current_address
-    return ledgers, ledger_addresses
+        if len(cells) > 2 and "Closing Balance" in cells[2]: break
+        if any(c for c in cells): data_rows.append(cells)
+    if not data_rows: return None, None
+    try:
+        df = pd.DataFrame(data_rows)
+        if df.shape[1] < len(header_row):
+            for i in range(df.shape[1], len(header_row)): df[i] = ''
+        df.columns = header_row[:df.shape[1]]
+    except Exception: return None, None
+    return ledger_name, df
+
+def parse_tally_ledgers(file_content: str) -> dict:
+    """A robust block-based parser for Tally CSV files."""
+    ledgers = {}
+    lines = [line for line in file_content.splitlines() if line.strip()]
+    if not lines: return {}, {}
+    
+    if "Ledger:" in file_content:
+        # CASE 1: MULTI-LEDGER FILE
+        ledger_blocks_text = file_content.split("Ledger:")[1:]
+        for i, block_text in enumerate(ledger_blocks_text):
+            block_lines = ["Ledger:" + block_text.strip()]
+            name, df = _parse_ledger_block(block_lines)
+            if name and df is not None:
+                if name in ledgers: name = f"{name} ({i+1})"
+                ledgers[name] = df
+    else:
+        # CASE 2: SINGLE-LEDGER FILE
+        name, df = _parse_ledger_block(lines)
+        if name and df is not None: ledgers[name] = df
+            
+    return ledgers, {}
 
 @st.cache_data(ttl=3600)
 def run_analysis_for_all(_file_content, credit_days):
@@ -260,7 +271,8 @@ def run_analysis_for_all(_file_content, credit_days):
     summary_data, detailed_reports, quarterly_reports = [], {}, {}
     for name, df in ledgers.items():
         try:
-            wdl, details_df, qtr_df = analyzer.run_full_analysis(df.copy(), credit_days)
+            df_copy = df.copy()
+            wdl, details_df, qtr_df = analyzer.run_full_analysis(df_copy, credit_days)
             summary_data.append({"Company / Ledger": name, "WADL": wdl})
             detailed_reports[name] = details_df
             quarterly_reports[name] = qtr_df
@@ -301,7 +313,7 @@ if uploaded_file is not None:
         st.dataframe(summary_df.style.format({"WADL": "{:.1f}"}), use_container_width=True)
 
         st.header("Detailed Ledger Report")
-        all_ledgers = summary_df["Company / Ledger"].tolist()
+        all_ledgers = sorted(summary_df["Company / Ledger"].tolist())
         selected_ledger = st.selectbox("Select a Ledger to View Detailed Report", all_ledgers)
 
         if selected_ledger:
@@ -357,7 +369,7 @@ if uploaded_file is not None:
                     ]].style.format({
                         "Sale Amount": "{:,.2f}",
                         "Weighted Days Late": "{:.1f}",
-                        "Amount Remaining": "{:.2f}"
+                        "Amount Remaining": "{:,.2f}"
                     }), use_container_width=True)
     else:
         st.warning("No ledgers found in the uploaded file or an error occurred during parsing.")
