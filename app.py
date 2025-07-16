@@ -1,4 +1,4 @@
-# FINAL, ROBUST, AND CORRECTED CODE - V5
+# FINAL, ROBUST, AND CORRECTED CODE - V6 (Definitive Parser)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -204,89 +204,93 @@ class PdfGenerator:
         return buffer
 
 # --- Data Parsing and Main App Logic ---
-def parse_tally_ledgers(file_content: str) -> dict:
-    """
-    A robust state-machine parser for Tally CSV files.
-    Handles both single and multi-ledger exports correctly.
-    """
-    ledgers = {}
+def _parse_single_ledger_block(block_lines):
+    """Helper function to parse a single, self-contained block of ledger text."""
+    ledger_name = "Unknown Ledger"
+    header_row = []
+    data_rows = []
+    header_idx = -1
+
+    # Find header row index
+    for i, line in enumerate(block_lines):
+        if "Date" in line and "Particulars" in line:
+            header_idx = i
+            break
     
+    if header_idx == -1:
+        return None, None # Block is not a valid ledger
+
+    # Find a plausible name in the lines *before* the header
+    for i in range(header_idx):
+        line = block_lines[i].strip()
+        # A good name is usually a short line with no commas and not a date range
+        if line and ',' not in line and ' to ' not in line.lower() and not line.lower().startswith('1-apr-'):
+            ledger_name = line
+            break # Take the first plausible name we find
+            
+    # If the first line of the block starts with "Ledger:", it's the definitive name
+    if block_lines[0].startswith("Ledger:"):
+        ledger_name = block_lines[0].split('1-Apr-')[0].replace("Ledger:", "").strip()
+
+    # Process headers and data
+    raw_headers = [h.strip() for h in block_lines[header_idx].split(',')]
+    try:
+        p_index = raw_headers.index('Particulars')
+        if p_index + 1 < len(raw_headers) and raw_headers[p_index + 1] == '':
+            raw_headers[p_index + 1] = 'Description'
+    except ValueError:
+        pass
+    header_row = raw_headers
+
+    for line in block_lines[header_idx + 1:]:
+        cells = [cell.strip() for cell in line.split(',')]
+        if len(cells) > 2 and "Closing Balance" in cells[2]:
+            break
+        if any(c for c in cells):
+            data_rows.append(cells)
+    
+    if not data_rows:
+        return None, None
+
+    df = pd.DataFrame(data_rows)
+    # Pad DataFrame with empty columns if data has fewer columns than headers
+    if df.shape[1] < len(header_row):
+        for i in range(df.shape[1], len(header_row)):
+            df[i] = ''
+    df.columns = header_row
+    
+    return ledger_name, df
+
+def parse_tally_ledgers(file_content: str) -> dict:
+    """A robust block-based parser for Tally CSV files."""
+    ledgers = {}
     lines = file_content.splitlines()
     
-    current_ledger_data = []
-    current_ledger_name = "Unknown Ledger"
+    # Find the start of each ledger block
+    ledger_starts = [i for i, line in enumerate(lines) if line.strip().startswith("Ledger:")]
     
-    # State machine starts by looking for the first ledger's header
-    state = "SEEKING_HEADER" 
-    
-    for line in lines:
-        line = line.replace("\ufeff", "").strip()
-        if not line:
-            continue
+    if not ledger_starts:
+        # Case 1: Single ledger file (no "Ledger:" lines)
+        name, df = _parse_single_ledger_block(lines)
+        if name and df is not None:
+            ledgers[name] = df
+    else:
+        # Case 2: Multi-ledger file
+        # Add a dummy start for the first block if it doesn't begin with "Ledger:"
+        if ledger_starts[0] != 0:
+            ledger_starts.insert(0, 0)
             
-        cells = [cell.strip() for cell in line.split(',')]
-        
-        # The "Ledger:" line is a hard reset, starting a new ledger block
-        if line.startswith("Ledger:"):
-            # If we have data for a previous ledger, save it
-            if state == "COLLECTING_ROWS" and current_ledger_data:
-                df = pd.DataFrame(current_ledger_data[1:], columns=current_ledger_data[0])
-                ledgers[current_ledger_name] = df
-            
-            # Reset for the new ledger
-            current_ledger_data = []
-            # Extract name, remove date range if present
-            current_ledger_name = line.split('1-Apr-')[0].replace("Ledger:", "").strip()
-            state = "SEEKING_HEADER"
-            continue
-
-        # The header row is the most reliable landmark
-        is_header = "Date" in cells and "Particulars" in cells and "Debit" in cells and "Credit" in cells
-        
-        if is_header:
-            # If we were already collecting rows, it means a new ledger has started without a "Ledger:" line
-            if state == "COLLECTING_ROWS" and current_ledger_data:
-                df = pd.DataFrame(current_ledger_data[1:], columns=current_ledger_data[0])
-                ledgers[current_ledger_name] = df
-                # The name for this new block is likely the line before the previous block's summary
-                # For simplicity, we'll just use a generic name if not found via "Ledger:"
-                current_ledger_name = f"Ledger (at line {lines.index(line)})"
-
-            # --- PARSER FIX: Rename the blank column after "Particulars" ---
-            raw_headers = cells
-            try:
-                p_index = raw_headers.index('Particulars')
-                if p_index + 1 < len(raw_headers) and raw_headers[p_index + 1] == '':
-                    raw_headers[p_index + 1] = 'Description'
-            except ValueError:
-                pass
-            
-            current_ledger_data = [raw_headers] # Start new data block with headers
-            state = "COLLECTING_ROWS"
-            continue
-            
-        if state == "SEEKING_HEADER":
-            # For single-ledger files, the name is usually the first non-empty, non-date-range line
-            if ',' not in line and ' to ' not in line.lower():
-                current_ledger_name = line.strip()
-                # Once we have a potential name, we still need to find the header
+        for i, start_idx in enumerate(ledger_starts):
+            end_idx = ledger_starts[i+1] if i + 1 < len(ledger_starts) else len(lines)
+            block = lines[start_idx:end_idx]
+            name, df = _parse_single_ledger_block(block)
+            if name and df is not None:
+                # Avoid duplicate names by appending a number if needed
+                if name in ledgers:
+                    name = f"{name} ({i})"
+                ledgers[name] = df
                 
-        elif state == "COLLECTING_ROWS":
-            # Stop collecting if we hit a summary line
-            if len(cells) > 2 and "Closing Balance" in cells[2]:
-                state = "SEEKING_HEADER" # Look for the next ledger block
-                continue
-            
-            # Add the row if it looks like a valid transaction
-            if any(c for c in cells):
-                current_ledger_data.append(cells)
-
-    # After the loop, save the last processed ledger
-    if state == "COLLECTING_ROWS" and len(current_ledger_data) > 1:
-        df = pd.DataFrame(current_ledger_data[1:], columns=current_ledger_data[0])
-        ledgers[current_ledger_name] = df
-        
-    return ledgers, {} # Return empty dict for addresses
+    return ledgers, {}
 
 @st.cache_data(ttl=3600)
 def run_analysis_for_all(_file_content, credit_days):
@@ -296,7 +300,6 @@ def run_analysis_for_all(_file_content, credit_days):
     summary_data, detailed_reports, quarterly_reports = [], {}, {}
     for name, df in ledgers.items():
         try:
-            # Create a copy to avoid modifying the cached DataFrame
             df_copy = df.copy()
             wdl, details_df, qtr_df = analyzer.run_full_analysis(df_copy, credit_days)
             summary_data.append({"Company / Ledger": name, "WADL": wdl})
