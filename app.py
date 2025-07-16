@@ -1,4 +1,4 @@
-# FINAL, ROBUST, AND CORRECTED CODE - V11 (Definitive Parser)
+# FINAL, ROBUST, AND CORRECTED CODE - V12 (Definitive Parser)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -205,104 +205,99 @@ class PdfGenerator:
         return buffer
 
 # --- Data Parsing and Main App Logic ---
-def _is_csv_header_row(line: str) -> bool:
-    """Checks if a line is the transaction header row."""
-    line_lower = line.lower()
-    return all(col in line_lower for col in ["date", "particulars", "debit", "credit"])
-
-def _clean_ledger_name(name: str) -> str:
-    """Removes common artifacts from a ledger name string."""
-    # Remove the "Ledger:" prefix
-    name = name.replace("Ledger:", "").strip()
-    # Remove date ranges, e.g., "1-Apr-24 to 31-Mar-25"
-    name = re.split(r'\s*1-Apr-', name, flags=re.IGNORECASE)[0]
-    # Remove trailing commas and whitespace
-    return name.strip().strip(',')
-
-def _parse_ledger_block(lines: list[str]) -> tuple[str, pd.DataFrame | None]:
-    """Parses a list of lines known to belong to a single ledger."""
-    ledger_name = "Unknown Ledger"
-    header_idx = -1
+def _parse_ledger_block(block_lines, uploaded_filename=""):
+    """Helper function to parse a single, self-contained block of ledger text."""
+    if not block_lines: return None, None
     
-    # Find the header row
-    for i, line in enumerate(lines):
-        if _is_csv_header_row(line):
+    ledger_name = "Unknown Ledger"
+    header_row, data_rows, header_idx = [], [], -1
+
+    for i, line in enumerate(block_lines):
+        if "Date" in line and "Particulars" in line:
             header_idx = i
             break
-    if header_idx == -1: return ledger_name, None
+    if header_idx == -1: return None, None
 
-    # Find the name in the lines *before* the header
-    for i in range(header_idx):
-        line = lines[i].strip()
-        # A good name is a non-empty line with no commas and isn't metadata
-        if line and ',' not in line and 'ledger account' not in line.lower() and ' to ' not in line.lower():
-            ledger_name = line
+    # --- NEW, ROBUST NAME FINDING LOGIC ---
+    ledger_account_line_idx = -1
+    for i, line in enumerate(block_lines[:header_idx]):
+        if "ledger account" in line.lower():
+            ledger_account_line_idx = i
             break
-            
-    # The first line of the block is the most reliable name source if it's a multi-ledger block
-    if lines[0].startswith("Ledger:"):
-        ledger_name = _clean_ledger_name(lines[0])
+    
+    if ledger_account_line_idx > 0:
+        ledger_name = block_lines[ledger_account_line_idx - 1].strip()
+    elif block_lines[0].startswith("Ledger:"):
+        ledger_name = block_lines[0].split('1-Apr-')[0].replace("Ledger:", "").strip()
+    else:
+        if uploaded_filename:
+            ledger_name = os.path.splitext(uploaded_filename)[0].replace("Ledger - ", "")
+        else:
+            for i in range(header_idx):
+                line = block_lines[i].strip()
+                if line and ',' not in line and ' to ' not in line.lower():
+                    ledger_name = line
+                    break
+    
+    ledger_name = ledger_name.strip().strip(',')
 
-    # Extract and clean headers
-    raw_headers = [h.strip() for h in lines[header_idx].split(',')]
+    # --- HEADER AND DATA PROCESSING ---
+    raw_headers = [h.strip() for h in block_lines[header_idx].split(',')]
     try:
         p_index = raw_headers.index('Particulars')
         if p_index + 1 < len(raw_headers) and raw_headers[p_index + 1] == '':
             raw_headers[p_index + 1] = 'Description'
     except ValueError: pass
-    
-    # Extract data rows
-    data_rows = []
-    for line in lines[header_idx + 1:]:
-        # Stop at closing balance
-        if "closing balance" in line.lower(): break
+    header_row = raw_headers
+
+    for line in block_lines[header_idx + 1:]:
         cells = [cell.strip() for cell in line.split(',')]
-        if any(cells):
+        if len(cells) > 2 and "Closing Balance" in cells[2]: break
+        if any(c for c in cells):
             data_rows.append(cells)
-            
+    
     if not data_rows: return ledger_name, None
 
-    # Create DataFrame
     try:
         df = pd.DataFrame(data_rows)
-        # Pad DataFrame with empty columns if data has fewer columns than headers
-        if df.shape[1] < len(raw_headers):
-            for i in range(df.shape[1], len(raw_headers)):
-                df[i] = ''
-        df.columns = raw_headers[:df.shape[1]]
-        return ledger_name, df
-    except Exception:
-        return ledger_name, None
+        if df.shape[1] < len(header_row):
+            for i in range(df.shape[1], len(header_row)): df[i] = ''
+        df.columns = header_row[:df.shape[1]]
+    except Exception: return ledger_name, None
+    
+    return ledger_name, df
 
-def parse_tally_ledgers(file_content: str) -> dict:
+def parse_tally_ledgers(file_content: str, filename: str) -> dict:
     """A robust block-based parser for Tally CSV files."""
     ledgers = {}
     lines = [line for line in file_content.splitlines() if line.strip()]
-    if not lines: return {}
-
-    # Detect file type based on the presence of the "Ledger:" keyword
+    if not lines: return {}, {}
+    
     if "Ledger:" in file_content:
         # MULTI-LEDGER FILE PATH
-        # Split the entire file content by the "Ledger:" delimiter
-        # The first item in the split list is the metadata before the first ledger
-        ledger_blocks = ("Ledger:" + block for block in file_content.split("Ledger:")[1:])
-        
-        for i, block_text in enumerate(ledger_blocks):
-            name, df = _parse_ledger_block(block_text.splitlines())
+        ledger_blocks_text = file_content.split("Ledger:")
+        first_block = ledger_blocks_text[0].strip()
+        if first_block:
+            name, df = _parse_ledger_block(first_block.splitlines(), filename)
+            if name and df is not None:
+                ledgers[name] = df
+        for i, block_text in enumerate(ledger_blocks_text[1:]):
+            block_lines = ["Ledger:" + block_text.strip()]
+            name, df = _parse_ledger_block(block_lines, filename)
             if name and df is not None:
                 if name in ledgers: name = f"{name} ({i+1})"
                 ledgers[name] = df
     else:
         # SINGLE-LEDGER FILE PATH
-        name, df = _parse_ledger_block(lines)
+        name, df = _parse_ledger_block(lines, filename)
         if name and df is not None:
             ledgers[name] = df
             
     return ledgers, {}
 
 @st.cache_data(ttl=3600)
-def run_analysis_for_all(_file_content, credit_days):
-    ledgers, _ = parse_tally_ledgers(_file_content)
+def run_analysis_for_all(_file_content, _filename, credit_days):
+    ledgers, _ = parse_tally_ledgers(_file_content, _filename)
     if not ledgers: return pd.DataFrame(), {}, {}
     analyzer = AnalysisEngine()
     summary_data, detailed_reports, quarterly_reports = [], {}, {}
@@ -343,7 +338,7 @@ if uploaded_file is not None:
         st.error("Fatal Error: Could not decode the uploaded file. Please re-save it with UTF-8 encoding and try again.")
         st.stop()
     
-    summary_df, detailed_reports, quarterly_reports = run_analysis_for_all(file_content, credit_days)
+    summary_df, detailed_reports, quarterly_reports = run_analysis_for_all(file_content, uploaded_file.name, credit_days)
 
     if not summary_df.empty:
         st.header("Overall Summary")
