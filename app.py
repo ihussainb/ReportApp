@@ -1,4 +1,4 @@
-# FINAL, ROBUST, AND CORRECTED CODE - V3
+# FINAL, ROBUST, AND CORRECTED CODE - V4
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -27,10 +27,6 @@ LIGHT_GRAY_HEX = '#f0f4f7'
 # --- Core Analysis Engine ---
 class AnalysisEngine:
     def get_fiscal_quarter_label(self, dt):
-        """
-        Labels the quarter using the transaction's own CALENDAR YEAR.
-        e.g., Apr 2024 is '2024 Q1'. Feb 2025 is '2025 Q4'.
-        """
         if pd.isna(dt): return "Invalid Date", None, None, None
         year, month = dt.year, dt.month
         fiscal_year_label = year
@@ -46,20 +42,26 @@ class AnalysisEngine:
         df["Parsed_Date"] = pd.to_datetime(df["Date"], format=DATE_FMT, errors="coerce")
         for _, row in df.iterrows():
             if pd.isna(row["Parsed_Date"]): continue
-            particulars = str(row.get("Particulars", "")).upper()
+            
+            # --- ANALYSIS FIX: Use the 'Description' column for keywords ---
+            description = str(row.get("Description", "")).upper()
+            
             try: debit_amt = float(str(row.get("Debit", "0")).replace(",", ""))
             except (ValueError, TypeError): debit_amt = 0.0
             try: credit_amt = float(str(row.get("Credit", "0")).replace(",", ""))
             except (ValueError, TypeError): credit_amt = 0.0
-            if "CLOSING BALANCE" in particulars: continue
+
+            if "CLOSING BALANCE" in description: continue
+            
             if credit_amt > 0:
-                payments.append({"date": row["Parsed_Date"], "amount": credit_amt, "vch_no": row["Vch No."]})
+                payments.append({"date": row["Parsed_Date"], "amount": credit_amt, "vch_no": row.get("Vch No.", "")})
                 continue
+
             if debit_amt > 0:
-                is_opening_balance = "OPENING BALANCE" in particulars
+                is_opening_balance = "OPENING BALANCE" in description
                 sales.append({
                     "date": row["Parsed_Date"],
-                    "vch_no": "Opening Balance" if is_opening_balance else row["Vch No."],
+                    "vch_no": "Opening Balance" if is_opening_balance else row.get("Vch No.", ""),
                     "amount": debit_amt,
                     "due_date": row["Parsed_Date"] + timedelta(days=credit_days),
                     "remaining": debit_amt,
@@ -213,67 +215,74 @@ def parse_tally_ledgers(file_content: str) -> (dict, dict):
     Parses a Tally CSV export containing one or more ledgers.
     This version is robust and handles both single and multi-ledger file formats.
     """
-    ledgers, ledger_addresses = {}, {}
-    current_ledger_rows = []
-    current_ledger_name = None
-    current_address = None
-    headers = None
-    potential_name = None
-
+    ledgers = {}
     lines = file_content.splitlines()
+    
+    # Split the file content by the "Ledger:" delimiter
+    # The first part before any "Ledger:" is the preamble for the first ledger
+    # or the entire content for a single-ledger file.
+    split_by_ledger = file_content.split('Ledger:')
+    
+    for i, block in enumerate(split_by_ledger):
+        if not block.strip():
+            continue
+            
+        block_lines = block.strip().splitlines()
+        
+        ledger_name = f"Ledger {i+1}"
+        header_idx = -1
+        headers = []
+        data_rows = []
+        
+        # For blocks after the first, the name is on the first line of the block
+        if i > 0:
+            name_line = block_lines.pop(0)
+            # The name might have a date range, e.g., "PREMIER CANS 1-Apr-24 to 31-Mar-25"
+            # We split by the date to get just the name
+            ledger_name = name_line.split('1-Apr-')[0].strip()
+        else: # For the very first block (or a single ledger file)
+            # Find a plausible name in the first few lines
+            for j, line in enumerate(block_lines):
+                # A good name is usually a short line with no commas and not a date range
+                if ',' not in line and ' to ' not in line.lower() and len(line) < 50:
+                    ledger_name = line.strip()
+                    break
+                # Stop looking after a few lines
+                if j > 5:
+                    break
 
-    def save_current_ledger():
-        nonlocal ledgers, ledger_addresses, current_ledger_name, current_address, current_ledger_rows, headers
-        if current_ledger_name and headers and current_ledger_rows:
-            df = pd.DataFrame(current_ledger_rows, columns=headers)
+        # Find the header row and the data
+        for j, line in enumerate(block_lines):
+            if "Date" in line and "Particulars" in line:
+                header_idx = j
+                raw_headers = [h.strip() for h in line.split(',')]
+                # --- PARSER FIX: Rename the blank column after "Particulars" ---
+                try:
+                    p_index = raw_headers.index('Particulars')
+                    if p_index + 1 < len(raw_headers) and raw_headers[p_index + 1] == '':
+                        raw_headers[p_index + 1] = 'Description'
+                except ValueError:
+                    pass # 'Particulars' not in headers, proceed as normal
+                headers = raw_headers
+                break
+        
+        if header_idx != -1:
+            # Data rows are all lines after the header
+            for line in block_lines[header_idx + 1:]:
+                # Stop at the final summary line of a ledger block
+                cells = [cell.strip() for cell in line.split(',')]
+                if len(cells) > 2 and cells[2].strip() == "Closing Balance":
+                    break
+                if any(c for c in cells): # Ensure the row is not completely empty
+                    data_rows.append(cells)
+
+        if headers and data_rows:
+            df = pd.DataFrame(data_rows, columns=headers)
             df.dropna(how='all', inplace=True)
             if not df.empty:
-                ledgers[current_ledger_name] = df
-                ledger_addresses[current_ledger_name] = current_address
-        current_ledger_rows, current_address, headers = [], None, None
+                ledgers[ledger_name] = df
 
-    for i, line in enumerate(lines):
-        line = line.replace("\ufeff", "").strip()
-        if not line: continue
-        cells = [cell.strip() for cell in line.split(',')]
-
-        if line.startswith("Ledger:"):
-            save_current_ledger()
-            current_ledger_name = cells[1].strip() if len(cells) > 1 else f"Unknown Ledger {i}"
-            potential_name = None
-            continue
-
-        if "Date" in cells and "Particulars" in cells and "Debit" in cells and "Credit" in cells:
-            if headers is not None:
-                save_current_ledger()
-            if current_ledger_name is None and potential_name:
-                current_ledger_name = potential_name
-            elif current_ledger_name is None:
-                # Fallback for single ledgers with no name at the top
-                current_ledger_name = "Ledger"
-            headers = [h.strip() if h.strip() else f"Unnamed_{j}" for j, h in enumerate(cells)]
-            continue
-
-        if headers:
-            particulars_cell = (cells[1] if len(cells) > 1 else "").strip()
-            if not particulars_cell.startswith(("Closing Balance")):
-                if any(cell for cell in cells):
-                    while len(cells) < len(headers): cells.append("")
-                    current_ledger_rows.append(cells)
-            continue
-        
-        if headers is None:
-            # Heuristic for finding the name in single-ledger files:
-            # It's usually one of the first few non-empty lines, has no commas, and isn't a date range.
-            if i < 10 and ',' not in line and ' to ' not in line.lower() and not line.lower().startswith('1-apr-'):
-                if potential_name is None:
-                    potential_name = line
-                else:
-                    if current_address is None: current_address = line
-                    else: current_address += f", {line}"
-
-    save_current_ledger()
-    return ledgers, ledger_addresses
+    return ledgers, {} # Returning empty dict for addresses for now
 
 @st.cache_data(ttl=3600)
 def run_analysis_for_all(_file_content, credit_days):
@@ -324,7 +333,7 @@ if uploaded_file is not None:
         st.dataframe(summary_df.style.format({"WADL": "{:.1f}"}), use_container_width=True)
 
         st.header("Detailed Ledger Report")
-        all_ledgers = summary_df["Company / Ledger"].tolist()
+        all_ledgers = sorted(summary_df["Company / Ledger"].tolist())
         selected_ledger = st.selectbox("Select a Ledger to View Detailed Report", all_ledgers)
 
         if selected_ledger:
@@ -380,7 +389,7 @@ if uploaded_file is not None:
                     ]].style.format({
                         "Sale Amount": "{:,.2f}",
                         "Weighted Days Late": "{:.1f}",
-                        "Amount Remaining": "{:,.2f}"
+                        "Amount Remaining": "{:.2f}"
                     }), use_container_width=True)
     else:
         st.warning("No ledgers found in the uploaded file or an error occurred during parsing.")
