@@ -1,4 +1,4 @@
-# FINAL, ROBUST, AND CORRECTED CODE - app.py
+# FINAL, ROBUST, AND CORRECTED CODE - V2
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -28,31 +28,29 @@ LIGHT_GRAY_HEX = '#f0f4f7'
 class AnalysisEngine:
     def get_fiscal_quarter_label(self, dt):
         """
-        Correctly assigns a fiscal quarter using the standard YYYY-YY format.
-        e.g., Apr 2024 is in '2024-25 Q1'. Feb 2025 is in '2024-25 Q4'.
-        This is the definitive, robust, and unambiguous solution.
+        Labels the quarter using the transaction's own CALENDAR YEAR.
+        e.g., Apr 2024 is '2024 Q1'. Feb 2025 is '2025 Q4'.
+        This matches the user's specific formatting request.
         """
         if pd.isna(dt): return "Invalid Date", None, None, None
         
         year, month = dt.year, dt.month
 
-        # Determine the STARTING year of the fiscal period
-        if month >= 4: # For dates in Apr-Dec, the fiscal year started in the same calendar year
-            fiscal_year_start = year
-        else: # For dates in Jan-Mar, the fiscal year started in the PREVIOUS calendar year
-            fiscal_year_start = year - 1
+        # --- CALENDAR YEAR FORMATTING FIX ---
+        # The label's year is the direct calendar year of the date.
+        fiscal_year_label = year
 
-        # Determine the quarter number
+        # Determine the quarter number based on an April-March cycle
         if 4 <= month <= 6: quarter, sort_date = 1, pd.Timestamp(year, 4, 1)
         elif 7 <= month <= 9: quarter, sort_date = 2, pd.Timestamp(year, 7, 1)
         elif 10 <= month <= 12: quarter, sort_date = 3, pd.Timestamp(year, 10, 1)
-        else: quarter, sort_date = 4, pd.Timestamp(year, 1, 1)
+        else: # Jan-Mar
+            quarter, sort_date = 4, pd.Timestamp(year, 1, 1)
         
-        # Create the unambiguous YYYY-YY label
-        fiscal_year_label = f"{fiscal_year_start}-{str(fiscal_year_start + 1)[-2:]}"
+        # Create the final label, e.g., "2024 Q1 Apr-Jun", "2025 Q4 Jan-Mar"
         q_label = f"{fiscal_year_label} Q{quarter} {QUARTER_MONTHS[quarter]}"
         
-        return q_label, fiscal_year_start, quarter, sort_date
+        return q_label, fiscal_year_label, quarter, sort_date
 
     def classify_sales_and_payments_robust(self, df, credit_days=0):
         sales, payments = [], []
@@ -359,7 +357,7 @@ if uploaded_file is not None:
                     ]].style.format({
                         "Sale Amount": "{:,.2f}",
                         "Weighted Days Late": "{:.1f}",
-                        "Amount Remaining": "{:,.2f}"
+                        "Amount Remaining": "{:.2f}"
                     }), use_container_width=True)
     else:
         st.warning("No ledgers found in the uploaded file or an error occurred during parsing.")
