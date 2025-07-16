@@ -1,4 +1,4 @@
-# FINAL, ROBUST, AND CORRECTED CODE - V6 (Definitive Parser)
+# FINAL, ROBUST, AND CORRECTED CODE - V7 (Definitive Parser)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -204,8 +204,11 @@ class PdfGenerator:
         return buffer
 
 # --- Data Parsing and Main App Logic ---
-def _parse_single_ledger_block(block_lines):
+def _parse_ledger_block(block_lines):
     """Helper function to parse a single, self-contained block of ledger text."""
+    if not block_lines:
+        return None, None
+
     ledger_name = "Unknown Ledger"
     header_row = []
     data_rows = []
@@ -218,21 +221,18 @@ def _parse_single_ledger_block(block_lines):
             break
     
     if header_idx == -1:
-        return None, None # Block is not a valid ledger
+        return None, None
 
     # Find a plausible name in the lines *before* the header
     for i in range(header_idx):
         line = block_lines[i].strip()
-        # A good name is usually a short line with no commas and not a date range
         if line and ',' not in line and ' to ' not in line.lower() and not line.lower().startswith('1-apr-'):
             ledger_name = line
-            break # Take the first plausible name we find
+            break
             
-    # If the first line of the block starts with "Ledger:", it's the definitive name
     if block_lines[0].startswith("Ledger:"):
         ledger_name = block_lines[0].split('1-Apr-')[0].replace("Ledger:", "").strip()
 
-    # Process headers and data
     raw_headers = [h.strip() for h in block_lines[header_idx].split(',')]
     try:
         p_index = raw_headers.index('Particulars')
@@ -252,42 +252,46 @@ def _parse_single_ledger_block(block_lines):
     if not data_rows:
         return None, None
 
-    df = pd.DataFrame(data_rows)
-    # Pad DataFrame with empty columns if data has fewer columns than headers
-    if df.shape[1] < len(header_row):
-        for i in range(df.shape[1], len(header_row)):
-            df[i] = ''
-    df.columns = header_row
+    try:
+        df = pd.DataFrame(data_rows)
+        if df.shape[1] < len(header_row):
+            for i in range(df.shape[1], len(header_row)):
+                df[i] = ''
+        df.columns = header_row[:df.shape[1]]
+    except Exception:
+        return None, None # Could not form a valid DataFrame
     
     return ledger_name, df
 
 def parse_tally_ledgers(file_content: str) -> dict:
     """A robust block-based parser for Tally CSV files."""
     ledgers = {}
-    lines = file_content.splitlines()
+    lines = [line for line in file_content.splitlines() if line.strip()]
     
-    # Find the start of each ledger block
+    if not lines:
+        return {}, {}
+
+    # Find all occurrences of the "Ledger:" separator
     ledger_starts = [i for i, line in enumerate(lines) if line.strip().startswith("Ledger:")]
     
     if not ledger_starts:
-        # Case 1: Single ledger file (no "Ledger:" lines)
-        name, df = _parse_single_ledger_block(lines)
+        # Case 1: Single ledger file
+        name, df = _parse_ledger_block(lines)
         if name and df is not None:
             ledgers[name] = df
     else:
         # Case 2: Multi-ledger file
-        # Add a dummy start for the first block if it doesn't begin with "Ledger:"
+        # The first block might start at line 0, even without the "Ledger:" keyword
         if ledger_starts[0] != 0:
             ledger_starts.insert(0, 0)
             
         for i, start_idx in enumerate(ledger_starts):
             end_idx = ledger_starts[i+1] if i + 1 < len(ledger_starts) else len(lines)
             block = lines[start_idx:end_idx]
-            name, df = _parse_single_ledger_block(block)
+            name, df = _parse_ledger_block(block)
             if name and df is not None:
-                # Avoid duplicate names by appending a number if needed
                 if name in ledgers:
-                    name = f"{name} ({i})"
+                    name = f"{name} ({i+1})"
                 ledgers[name] = df
                 
     return ledgers, {}
@@ -398,7 +402,7 @@ if uploaded_file is not None:
                     ]].style.format({
                         "Sale Amount": "{:,.2f}",
                         "Weighted Days Late": "{:.1f}",
-                        "Amount Remaining": "{:.2f}"
+                        "Amount Remaining": "{:,.2f}"
                     }), use_container_width=True)
     else:
         st.warning("No ledgers found in the uploaded file or an error occurred during parsing.")
