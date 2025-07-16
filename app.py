@@ -1,4 +1,4 @@
-# FINAL, ROBUST, AND CORRECTED CODE - V8 (Definitive Parser)
+# FINAL, ROBUST, AND CORRECTED CODE - V9 (Definitive Parser)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -249,8 +249,17 @@ def parse_tally_ledgers(file_content: str) -> dict:
     
     if "Ledger:" in file_content:
         # CASE 1: MULTI-LEDGER FILE
-        ledger_blocks_text = file_content.split("Ledger:")[1:]
-        for i, block_text in enumerate(ledger_blocks_text):
+        ledger_blocks_text = file_content.split("Ledger:")
+        # The first block might be metadata before the first "Ledger:" line
+        # Or it could be the first ledger if the file doesn't start with "Ledger:"
+        first_block = ledger_blocks_text[0].strip()
+        if first_block:
+            name, df = _parse_ledger_block(first_block.splitlines())
+            if name and df is not None:
+                ledgers[name] = df
+
+        # Process the rest of the blocks, which are guaranteed to start with the name
+        for i, block_text in enumerate(ledger_blocks_text[1:]):
             block_lines = ["Ledger:" + block_text.strip()]
             name, df = _parse_ledger_block(block_lines)
             if name and df is not None:
@@ -369,7 +378,7 @@ if uploaded_file is not None:
                     ]].style.format({
                         "Sale Amount": "{:,.2f}",
                         "Weighted Days Late": "{:.1f}",
-                        "Amount Remaining": "{:,.2f}"
+                        "Amount Remaining": "{:.2f}"
                     }), use_container_width=True)
     else:
         st.warning("No ledgers found in the uploaded file or an error occurred during parsing.")
