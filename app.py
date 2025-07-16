@@ -1,4 +1,4 @@
-# FINAL, ROBUST, AND CORRECTED CODE - V12 (Definitive Parser)
+# FINAL, ROBUST, AND CORRECTED CODE - V12 (Definitive Parser & UI Fixes)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -16,6 +16,7 @@ from reportlab.lib.colors import HexColor
 import tempfile
 import os
 import re
+import traceback
 
 # --- Configuration ---
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -205,7 +206,13 @@ class PdfGenerator:
         return buffer
 
 # --- Data Parsing and Main App Logic ---
-def _parse_ledger_block(block_lines, uploaded_filename=""):
+def _clean_ledger_name(name: str) -> str:
+    """Removes common artifacts from a ledger name string."""
+    name = name.replace("Ledger:", "").strip()
+    name = re.split(r'\s*1-Apr-', name, flags=re.IGNORECASE)[0]
+    return name.strip().strip(',')
+
+def _parse_ledger_block(block_lines, filename):
     """Helper function to parse a single, self-contained block of ledger text."""
     if not block_lines: return None, None
     
@@ -228,10 +235,10 @@ def _parse_ledger_block(block_lines, uploaded_filename=""):
     if ledger_account_line_idx > 0:
         ledger_name = block_lines[ledger_account_line_idx - 1].strip()
     elif block_lines[0].startswith("Ledger:"):
-        ledger_name = block_lines[0].split('1-Apr-')[0].replace("Ledger:", "").strip()
+        ledger_name = _clean_ledger_name(block_lines[0])
     else:
-        if uploaded_filename:
-            ledger_name = os.path.splitext(uploaded_filename)[0].replace("Ledger - ", "")
+        if filename:
+            ledger_name = os.path.splitext(filename)[0].replace("Ledger - ", "")
         else:
             for i in range(header_idx):
                 line = block_lines[i].strip()
@@ -239,9 +246,8 @@ def _parse_ledger_block(block_lines, uploaded_filename=""):
                     ledger_name = line
                     break
     
-    ledger_name = ledger_name.strip().strip(',')
+    ledger_name = _clean_ledger_name(ledger_name)
 
-    # --- HEADER AND DATA PROCESSING ---
     raw_headers = [h.strip() for h in block_lines[header_idx].split(',')]
     try:
         p_index = raw_headers.index('Particulars')
@@ -271,19 +277,22 @@ def parse_tally_ledgers(file_content: str, filename: str) -> dict:
     """A robust block-based parser for Tally CSV files."""
     ledgers = {}
     lines = [line for line in file_content.splitlines() if line.strip()]
-    if not lines: return {}, {}
-    
+    if not lines: return {}
+
     if "Ledger:" in file_content:
         # MULTI-LEDGER FILE PATH
-        ledger_blocks_text = file_content.split("Ledger:")
-        first_block = ledger_blocks_text[0].strip()
-        if first_block:
-            name, df = _parse_ledger_block(first_block.splitlines(), filename)
-            if name and df is not None:
-                ledgers[name] = df
-        for i, block_text in enumerate(ledger_blocks_text[1:]):
-            block_lines = ["Ledger:" + block_text.strip()]
-            name, df = _parse_ledger_block(block_lines, filename)
+        ledger_blocks = []
+        current_block = []
+        for line in lines:
+            if line.startswith("Ledger:") and current_block:
+                ledger_blocks.append(current_block)
+                current_block = []
+            current_block.append(line)
+        if current_block:
+            ledger_blocks.append(current_block)
+        
+        for i, block in enumerate(ledger_blocks):
+            name, df = _parse_ledger_block(block, filename)
             if name and df is not None:
                 if name in ledgers: name = f"{name} ({i+1})"
                 ledgers[name] = df
@@ -293,11 +302,12 @@ def parse_tally_ledgers(file_content: str, filename: str) -> dict:
         if name and df is not None:
             ledgers[name] = df
             
-    return ledgers, {}
+    return ledgers
 
 @st.cache_data(ttl=3600)
-def run_analysis_for_all(_file_content, _filename, credit_days):
-    ledgers, _ = parse_tally_ledgers(_file_content, _filename)
+def run_analysis_for_all(_file_content, _filename, credit_days, rerun_trigger=0):
+    # The rerun_trigger argument is a dummy to allow cache clearing
+    ledgers = parse_tally_ledgers(_file_content, _filename)
     if not ledgers: return pd.DataFrame(), {}, {}
     analyzer = AnalysisEngine()
     summary_data, detailed_reports, quarterly_reports = [], {}, {}
@@ -309,7 +319,9 @@ def run_analysis_for_all(_file_content, _filename, credit_days):
             detailed_reports[name] = details_df
             quarterly_reports[name] = qtr_df
         except Exception as e:
-            st.error(f"Error analyzing ledger '{name}': {e}")
+            # --- VISIBLE ERROR FIX ---
+            st.error(f"An error occurred while analyzing ledger: '{name}'")
+            st.code(traceback.format_exc())
             continue
     summary_df = pd.DataFrame(summary_data)
     return summary_df, detailed_reports, quarterly_reports
@@ -322,6 +334,13 @@ with st.sidebar:
     st.header("Settings")
     uploaded_file = st.file_uploader("Upload Tally Ledger CSV", type=["csv"])
     credit_days = st.number_input("Credit Days", min_value=0, max_value=365, value=30, step=1)
+
+    # --- CLEAR CACHE BUTTON FIX ---
+    if 'rerun_counter' not in st.session_state:
+        st.session_state.rerun_counter = 0
+    if st.button("Clear Cache & Re-run Analysis"):
+        st.session_state.rerun_counter += 1
+        st.cache_data.clear() # Also clear the memo cache for good measure
 
 if uploaded_file is not None:
     file_content = None
@@ -338,8 +357,9 @@ if uploaded_file is not None:
         st.error("Fatal Error: Could not decode the uploaded file. Please re-save it with UTF-8 encoding and try again.")
         st.stop()
     
-    # Pass the filename to the analysis function
-    summary_df, detailed_reports, quarterly_reports = run_analysis_for_all(file_content, uploaded_file.name, credit_days)
+    summary_df, detailed_reports, quarterly_reports = run_analysis_for_all(
+        file_content, uploaded_file.name, credit_days, rerun_trigger=st.session_state.rerun_counter
+    )
 
     if not summary_df.empty:
         st.header("Overall Summary")
