@@ -235,8 +235,10 @@ def _parse_ledger_block(block_lines):
     if not data_rows: return None, None
     try:
         df = pd.DataFrame(data_rows)
+        # Pad DataFrame with empty columns if data has fewer columns than headers
         if df.shape[1] < len(header_row):
-            for i in range(df.shape[1], len(header_row)): df[i] = ''
+            for i in range(df.shape[1], len(header_row)):
+                df[i] = ''
         df.columns = header_row[:df.shape[1]]
     except Exception: return None, None
     return ledger_name, df
@@ -247,9 +249,12 @@ def parse_tally_ledgers(file_content: str) -> dict:
     lines = [line for line in file_content.splitlines() if line.strip()]
     if not lines: return {}, {}
     
+    # This is the key: Detect file type first, then delegate.
     if "Ledger:" in file_content:
         # CASE 1: MULTI-LEDGER FILE
+        # Split the entire file content by the "Ledger:" delimiter
         ledger_blocks_text = file_content.split("Ledger:")
+        
         # The first block might be metadata before the first "Ledger:" line
         # Or it could be the first ledger if the file doesn't start with "Ledger:"
         first_block = ledger_blocks_text[0].strip()
@@ -260,6 +265,7 @@ def parse_tally_ledgers(file_content: str) -> dict:
 
         # Process the rest of the blocks, which are guaranteed to start with the name
         for i, block_text in enumerate(ledger_blocks_text[1:]):
+            # Re-add the "Ledger:" prefix to the block for the helper function to parse the name
             block_lines = ["Ledger:" + block_text.strip()]
             name, df = _parse_ledger_block(block_lines)
             if name and df is not None:
@@ -267,6 +273,7 @@ def parse_tally_ledgers(file_content: str) -> dict:
                 ledgers[name] = df
     else:
         # CASE 2: SINGLE-LEDGER FILE
+        # The entire file is one block
         name, df = _parse_ledger_block(lines)
         if name and df is not None: ledgers[name] = df
             
