@@ -1,4 +1,4 @@
-# FINAL, ROBUST, AND CORRECTED CODE - V10 (Definitive Parser)
+# FINAL, ROBUST, AND CORRECTED CODE - V11 (Claude's Parser Integrated)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -15,6 +15,8 @@ from reportlab.lib import colors
 from reportlab.lib.colors import HexColor
 import tempfile
 import os
+import re
+from typing import Dict, List, Optional
 
 # --- Configuration ---
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -203,83 +205,140 @@ class PdfGenerator:
         buffer.seek(0)
         return buffer
 
-# --- Data Parsing and Main App Logic ---
-def _parse_ledger_block(block_lines):
-    """Helper function to parse a single, self-contained block of ledger text."""
-    if not block_lines: return None, None
-    ledger_name = "Unknown Ledger"
-    header_row, data_rows, header_idx = [], [], -1
-    for i, line in enumerate(block_lines):
-        if "Date" in line and "Particulars" in line:
-            header_idx = i
-            break
-    if header_idx == -1: return None, None
-    for i in range(header_idx):
-        line = block_lines[i].strip()
-        if line and ',' not in line and ' to ' not in line.lower() and not line.lower().startswith('1-apr-'):
-            ledger_name = line
-            break
-    if block_lines[0].startswith("Ledger:"):
-        ledger_name = block_lines[0].split('1-Apr-')[0].replace("Ledger:", "").strip()
-    raw_headers = [h.strip() for h in block_lines[header_idx].split(',')]
+# --- Data Parsing and Main App Logic (Using Claude's Robust Parser) ---
+def _is_multi_ledger_format(lines: List[str]) -> bool:
+    for line in lines[:50]:
+        if line.strip().startswith("Ledger:"):
+            return True
+    return False
+
+def _extract_ledger_name_from_marker(ledger_line: str) -> str:
+    name_part = ledger_line.replace("Ledger:", "").strip()
+    date_pattern = r'\b\d{1,2}-[A-Za-z]{3}-\d{2,4}\s+to\s+\d{1,2}-[A-Za-z]{3}-\d{2,4}\b'
+    name_part = re.sub(date_pattern, '', name_part).strip()
+    return name_part if name_part else "Unknown Ledger"
+
+def _is_csv_header_row(line: str) -> bool:
+    required_columns = ["date", "particulars", "debit", "credit"]
+    line_lower = line.lower()
+    return all(col in line_lower for col in required_columns)
+
+def _find_header_row(lines: List[str]) -> int:
+    for i, line in enumerate(lines):
+        if _is_csv_header_row(line):
+            return i
+    return -1
+
+def _extract_and_clean_headers(header_line: str) -> List[str]:
+    raw_headers = [h.strip() for h in header_line.split(',')]
+    cleaned_headers = []
+    description_added = False
+    for i, header in enumerate(raw_headers):
+        if not header:
+            if i > 0 and cleaned_headers[-1].lower() == 'particulars' and not description_added:
+                cleaned_headers.append('Description')
+                description_added = True
+            else:
+                cleaned_headers.append(f'Unnamed_{i}')
+        else:
+            cleaned_headers.append(header)
+    return cleaned_headers
+
+def _parse_data_row(line: str, expected_columns: int) -> Optional[List[str]]:
     try:
-        p_index = raw_headers.index('Particulars')
-        if p_index + 1 < len(raw_headers) and raw_headers[p_index + 1] == '':
-            raw_headers[p_index + 1] = 'Description'
-    except ValueError: pass
-    header_row = raw_headers
-    for line in block_lines[header_idx + 1:]:
         cells = [cell.strip() for cell in line.split(',')]
-        if len(cells) > 2 and "Closing Balance" in cells[2]: break
-        if any(c for c in cells): data_rows.append(cells)
-    if not data_rows: return None, None
+        while len(cells) < expected_columns:
+            cells.append('')
+        if len(cells) > expected_columns:
+            cells = cells[:expected_columns]
+        return cells
+    except Exception:
+        return None
+
+def _is_summary_line(line: str) -> bool:
+    summary_indicators = ["closing balance", "total", "grand total"]
+    line_lower = line.lower()
+    return any(indicator in line_lower for indicator in summary_indicators)
+
+def _is_empty_row(row_data: List[str]) -> bool:
+    return all(cell.strip() == '' for cell in row_data)
+
+def _clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    important_cols = ['Date', 'Particulars', 'Debit', 'Credit']
+    existing_cols = [col for col in important_cols if col in df.columns]
+    if existing_cols:
+        df = df.dropna(subset=existing_cols, how='all')
+    numeric_cols = ['Debit', 'Credit']
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.replace(',', '').str.strip()
+            df[col] = df[col].replace('', '0')
+    df = df.reset_index(drop=True)
+    return df
+
+def _parse_ledger_block(lines: List[str]) -> Optional[pd.DataFrame]:
+    if not lines: return None
+    header_row_index = _find_header_row(lines)
+    if header_row_index == -1: return None
+    header_line = lines[header_row_index]
+    headers = _extract_and_clean_headers(header_line)
+    data_rows = []
+    for i in range(header_row_index + 1, len(lines)):
+        line = lines[i].strip()
+        if not line or _is_summary_line(line): continue
+        row_data = _parse_data_row(line, len(headers))
+        if row_data and not _is_empty_row(row_data):
+            data_rows.append(row_data)
+    if not data_rows: return None
     try:
-        df = pd.DataFrame(data_rows)
-        if df.shape[1] < len(header_row):
-            for i in range(df.shape[1], len(header_row)): df[i] = ''
-        df.columns = header_row[:df.shape[1]]
-    except Exception: return None, None
-    return ledger_name, df
+        df = pd.DataFrame(data_rows, columns=headers)
+        return _clean_dataframe(df)
+    except Exception:
+        return None
 
-def parse_tally_ledgers(file_content: str) -> dict:
-    """A robust block-based parser for Tally CSV files."""
-    ledgers = {}
-    lines = [line for line in file_content.splitlines() if line.strip()]
-    if not lines: return {}, {}
+def _extract_company_name_from_header(lines: List[str]) -> str:
+    for i, line in enumerate(lines[:15]):
+        line = line.strip()
+        if not line or _is_csv_header_row(line) or ' to ' in line.lower():
+            continue
+        if ',' not in line:
+            return line
+    return "Unknown Company"
+
+def parse_tally_ledgers(file_content: str) -> Dict[str, pd.DataFrame]:
+    if not file_content or not file_content.strip(): return {}
+    lines = [line.replace("\ufeff", "").rstrip() for line in file_content.splitlines()]
+    lines = [line for line in lines if line.strip()]
     
-    # This is the key: Detect file type first, then delegate.
-    if "Ledger:" in file_content:
-        # CASE 1: MULTI-LEDGER FILE
-        # Split the entire file content by the "Ledger:" delimiter
-        ledger_blocks_text = file_content.split("Ledger:")
-        
-        # The first block might be metadata before the first "Ledger:" line
-        # Or it could be the first ledger if the file doesn't start with "Ledger:"
-        first_block = ledger_blocks_text[0].strip()
-        if first_block:
-            name, df = _parse_ledger_block(first_block.splitlines())
-            if name and df is not None:
-                ledgers[name] = df
-
-        # Process the rest of the blocks, which are guaranteed to start with the name
-        for i, block_text in enumerate(ledger_blocks_text[1:]):
-            # Re-add the "Ledger:" prefix to the block for the helper function to parse the name
-            block_lines = ["Ledger:" + block_text.strip()]
-            name, df = _parse_ledger_block(block_lines)
-            if name and df is not None:
-                if name in ledgers: name = f"{name} ({i+1})"
-                ledgers[name] = df
+    if _is_multi_ledger_format(lines):
+        ledgers = {}
+        current_ledger_name = None
+        current_block_lines = []
+        for line in lines:
+            if line.strip().startswith("Ledger:"):
+                if current_ledger_name and current_block_lines:
+                    df = _parse_ledger_block(current_block_lines)
+                    if df is not None and not df.empty:
+                        ledgers[current_ledger_name] = df
+                current_ledger_name = _extract_ledger_name_from_marker(line)
+                current_block_lines = []
+            elif current_ledger_name:
+                current_block_lines.append(line)
+        if current_ledger_name and current_block_lines:
+            df = _parse_ledger_block(current_block_lines)
+            if df is not None and not df.empty:
+                ledgers[current_ledger_name] = df
+        return ledgers
     else:
-        # CASE 2: SINGLE-LEDGER FILE
-        # The entire file is one block
-        name, df = _parse_ledger_block(lines)
-        if name and df is not None: ledgers[name] = df
-            
-    return ledgers, {}
+        company_name = _extract_company_name_from_header(lines)
+        df = _parse_ledger_block(lines)
+        if df is not None and not df.empty:
+            return {company_name: df}
+        return {}
 
 @st.cache_data(ttl=3600)
 def run_analysis_for_all(_file_content, credit_days):
-    ledgers, _ = parse_tally_ledgers(_file_content)
+    ledgers = parse_tally_ledgers(_file_content)
     if not ledgers: return pd.DataFrame(), {}, {}
     analyzer = AnalysisEngine()
     summary_data, detailed_reports, quarterly_reports = [], {}, {}
