@@ -338,6 +338,7 @@ if uploaded_file is not None:
         st.error("Fatal Error: Could not decode the uploaded file. Please re-save it with UTF-8 encoding and try again.")
         st.stop()
     
+    # Pass the filename to the analysis function
     summary_df, detailed_reports, quarterly_reports = run_analysis_for_all(file_content, uploaded_file.name, credit_days)
 
     if not summary_df.empty:
