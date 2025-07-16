@@ -235,10 +235,8 @@ def _parse_ledger_block(block_lines):
     if not data_rows: return None, None
     try:
         df = pd.DataFrame(data_rows)
-        # Pad DataFrame with empty columns if data has fewer columns than headers
         if df.shape[1] < len(header_row):
-            for i in range(df.shape[1], len(header_row)):
-                df[i] = ''
+            for i in range(df.shape[1], len(header_row)): df[i] = ''
         df.columns = header_row[:df.shape[1]]
     except Exception: return None, None
     return ledger_name, df
